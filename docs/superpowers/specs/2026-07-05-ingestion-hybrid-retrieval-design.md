@@ -350,9 +350,37 @@ class Settings(BaseSettings):
 
     class Config:
         env_prefix = "RAG_"
+
+    @model_validator(mode="after")
+    def _validate_weights_and_k(self) -> "Settings":
+        if not (0.0 <= self.rrf_dense_weight <= 1.0):
+            raise ValueError("rrf_dense_weight must be in [0, 1]")
+        if not (0.0 <= self.rrf_sparse_weight <= 1.0):
+            raise ValueError("rrf_sparse_weight must be in [0, 1]")
+        if abs(self.rrf_dense_weight + self.rrf_sparse_weight - 1.0) > 1e-6:
+            raise ValueError("rrf_dense_weight + rrf_sparse_weight must sum to 1.0")
+        if self.rerank_top_n > self.dense_k + self.sparse_k:
+            raise ValueError("rerank_top_n cannot exceed dense_k + sparse_k")
+        return self
 ```
 
-Pydantic gives validation and IDE support over raw env var reads.
+Pydantic gives validation and IDE support over raw env var reads. Invalid
+weight/`k` combinations fail fast at startup rather than silently producing
+degraded rankings at query time.
+
+## Deferred (explicit extension points, not built now)
+
+- **Async ingestion**: `IngestionPipeline.ingest()` is a plain synchronous
+  call for now. If embedding/loading becomes a bottleneck, it can be wrapped
+  by a queue/worker later without changing its internal steps.
+- **Metadata filtering**: `VectorStore.query()` and `SparseRetriever.search()`
+  take only `(embedding|query, k)` today. Adding an optional `filters: dict`
+  parameter later is additive, not a breaking change, since callers
+  (`DenseRetriever`/`SparseRetriever`) already pass through by keyword.
+- **Embedding migrations**: because `EmbeddingRecord` carries
+  `embedding_model`/`embedding_dimension`/`provider`, multiple embedding
+  versions could coexist in `VectorStore` during a future migration; this
+  sub-spec does not implement dual-write/migration tooling.
 
 ## Testing
 

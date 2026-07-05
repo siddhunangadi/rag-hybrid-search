@@ -9,7 +9,7 @@ class GeminiProvider(GenerationProvider):
     def __init__(
         self,
         api_key: str,
-        generation_model: str = "gemini-1.5-flash",
+        generation_model: str = "gemini-2.5-flash",
         timeout: float = 30.0,
     ):
         self._api_key = api_key

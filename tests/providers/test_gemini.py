@@ -13,7 +13,7 @@ def test_generate_calls_generate_content_endpoint(provider, mocker):
     mock_response = httpx.Response(
         status_code=200,
         json={"candidates": [{"content": {"parts": [{"text": "an answer"}]}}]},
-        request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"),
+        request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"),
     )
     mock_post = mocker.patch.object(httpx.Client, "post", return_value=mock_response)
 
@@ -21,7 +21,7 @@ def test_generate_calls_generate_content_endpoint(provider, mocker):
 
     assert result == "an answer"
     called_url = mock_post.call_args[0][0]
-    assert "gemini-1.5-flash:generateContent" in called_url
+    assert "gemini-2.5-flash:generateContent" in called_url
     assert mock_post.call_args.kwargs["params"] == {"key": "test-key"}
 
 
@@ -29,7 +29,7 @@ def test_generate_sends_prompt_as_content(provider, mocker):
     mock_response = httpx.Response(
         status_code=200,
         json={"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
-        request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"),
+        request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"),
     )
     mock_post = mocker.patch.object(httpx.Client, "post", return_value=mock_response)
 
@@ -39,6 +39,6 @@ def test_generate_sends_prompt_as_content(provider, mocker):
     assert sent_json["contents"][0]["parts"][0]["text"] == "hello world"
 
 
-def test_model_name_defaults_to_gemini_1_5_flash():
+def test_model_name_defaults_to_gemini_2_5_flash():
     provider = GeminiProvider(api_key="test-key")
-    assert provider.model_name == "gemini-1.5-flash"
+    assert provider.model_name == "gemini-2.5-flash"

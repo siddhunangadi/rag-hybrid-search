@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: rag-hybrid-search
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: RAG_GEMINI_API_KEY
+        sync: false
+      - key: RAG_NVIDIA_API_KEY
+        sync: false
+      - key: RAG_DATA_DIR
+        value: /opt/render/project/data

@@ -1,0 +1,153 @@
+"""Builds and holds the app-lifetime singletons used by the API routes.
+
+Provider selection (kept intentionally simple, no config DSL):
+
+Generation provider:
+    1. ``settings.gemini_api_key`` set -> ``GeminiProvider``
+    2. ``settings.nvidia_api_key`` set -> ``NvidiaProvider``
+    3. otherwise -> ``MockProvider`` (dev/demo fallback: ``/answer`` will not
+       produce a grounded, real answer without a configured API key; it just
+       echoes a canned response so the pipeline plumbing can be exercised).
+
+Embedding provider:
+    1. ``settings.nvidia_api_key`` set -> ``NvidiaProvider`` (the same
+       instance is reused if generation also picked Nvidia)
+    2. otherwise -> ``FakeEmbeddingProvider`` (dev/demo fallback: a
+       deterministic trigram-hash embedding that is NOT semantically
+       meaningful, useful only for exercising retrieval plumbing without a
+       real embedding model configured).
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from fastapi import Request
+
+from rag_hybrid_search.config import Settings
+from rag_hybrid_search.ingestion.chunkers.base import Chunker
+from rag_hybrid_search.ingestion.chunkers.recursive import RecursiveChunker
+from rag_hybrid_search.ingestion.loaders.base import Loader
+from rag_hybrid_search.ingestion.pipeline import IngestionPipeline
+from rag_hybrid_search.providers.base import EmbeddingProvider, GenerationProvider
+from rag_hybrid_search.providers.gemini import GeminiProvider
+from rag_hybrid_search.providers.nvidia import NvidiaProvider
+from rag_hybrid_search.retrieval.dense import DenseRetriever
+from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker
+from rag_hybrid_search.retrieval.retriever import HybridRetriever
+from rag_hybrid_search.retrieval.sparse import SparseRetriever
+from rag_hybrid_search.storage.bm25_index import BM25Index
+from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
+from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
+from rag_hybrid_search.storage.index_manager import IndexManager
+from rag_pipeline.generation_provider import MockProvider
+from rag_pipeline.rag_pipeline import RagPipeline
+from tests.fakes import FakeEmbeddingProvider
+
+_UPLOADS_DIRNAME = "uploads"
+_CHUNK_DB_FILENAME = "chunks.db"
+_CHROMA_DIRNAME = "chroma"
+_BM25_INDEX_FILENAME = "bm25.pkl"
+
+
+@dataclass
+class Container:
+    """Holds the app-lifetime singletons wired for a given ``Settings``."""
+
+    settings: Settings
+    embedding_provider: EmbeddingProvider
+    generation_provider: GenerationProvider
+    embedding_provider_name: str
+    generation_provider_name: str
+    chunk_store: SqliteChunkStore
+    index_manager: IndexManager
+    chunker: Chunker
+    rag_pipeline: RagPipeline
+    uploads_dir: Path
+
+    def build_ingestion_pipeline(self, loader: Loader) -> IngestionPipeline:
+        """Build an ``IngestionPipeline`` for a specific loader, reusing shared singletons.
+
+        ``IngestionPipeline.ingest`` needs a loader matched to the document's
+        format (markdown/html/text/pdf), so routes.py picks one per uploaded
+        file and calls this to get a pipeline wired against the shared
+        chunk store, index manager, and embedding provider.
+        """
+        return IngestionPipeline(
+            loader=loader,
+            chunker=self.chunker,
+            embedding_provider=self.embedding_provider,
+            chunk_store=self.chunk_store,
+            index_manager=self.index_manager,
+            dedup_cosine_threshold=self.settings.dedup_cosine_threshold,
+            dedup_text_threshold=self.settings.dedup_text_similarity_threshold,
+        )
+
+
+def _select_generation_provider(
+    settings: Settings, nvidia_provider: NvidiaProvider | None
+) -> tuple[GenerationProvider, str]:
+    """Pick a generation provider per the fallback order documented above."""
+    if settings.gemini_api_key:
+        return GeminiProvider(api_key=settings.gemini_api_key), "gemini"
+    if settings.nvidia_api_key:
+        return nvidia_provider or NvidiaProvider(api_key=settings.nvidia_api_key), "nvidia"
+    return MockProvider(), "mock"
+
+
+def _select_embedding_provider(settings: Settings) -> tuple[EmbeddingProvider, str, NvidiaProvider | None]:
+    """Pick an embedding provider per the fallback order documented above."""
+    if settings.nvidia_api_key:
+        provider = NvidiaProvider(api_key=settings.nvidia_api_key)
+        return provider, "nvidia", provider
+    return FakeEmbeddingProvider(), "fake", None
+
+
+def build_container(settings: Settings | None = None) -> Container:
+    """Construct all app-lifetime singletons for the given (or env-derived) settings."""
+    settings = settings or Settings()
+
+    data_dir = Path(settings.data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    uploads_dir = data_dir / _UPLOADS_DIRNAME
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    embedding_provider, embedding_provider_name, nvidia_provider = _select_embedding_provider(settings)
+    generation_provider, generation_provider_name = _select_generation_provider(settings, nvidia_provider)
+
+    chunk_store = SqliteChunkStore(db_path=str(data_dir / _CHUNK_DB_FILENAME))
+    vector_store = ChromaVectorStore(data_dir=str(data_dir / _CHROMA_DIRNAME))
+    bm25_index = BM25Index(index_path=str(data_dir / _BM25_INDEX_FILENAME))
+    index_manager = IndexManager(chunk_store, vector_store, bm25_index)
+
+    chunker = RecursiveChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
+
+    retriever = HybridRetriever(
+        dense_retriever=DenseRetriever(embedding_provider, vector_store, chunk_store),
+        sparse_retriever=SparseRetriever(chunk_store, bm25_index),
+        rerank_provider=CrossEncoderReranker(),
+        dense_weight=settings.rrf_dense_weight,
+        sparse_weight=settings.rrf_sparse_weight,
+        rrf_k=settings.rrf_k,
+        dense_k=settings.dense_k,
+        sparse_k=settings.sparse_k,
+        rerank_top_n=settings.rerank_top_n,
+    )
+    rag_pipeline = RagPipeline(retriever, generation_provider)
+
+    return Container(
+        settings=settings,
+        embedding_provider=embedding_provider,
+        generation_provider=generation_provider,
+        embedding_provider_name=embedding_provider_name,
+        generation_provider_name=generation_provider_name,
+        chunk_store=chunk_store,
+        index_manager=index_manager,
+        chunker=chunker,
+        rag_pipeline=rag_pipeline,
+        uploads_dir=uploads_dir,
+    )
+
+
+def get_container(request: Request) -> Container:
+    """FastAPI dependency returning the app-lifetime ``Container`` built at startup."""
+    return request.app.state.container

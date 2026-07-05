@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from rag_hybrid_search.models import Chunk, EmbeddingRecord, RetrievedChunk
+from rag_hybrid_search.models import Chunk, EmbeddingRecord
 from rag_hybrid_search.providers.base import RerankProvider
 from rag_hybrid_search.retrieval.dense import DenseRetriever
 from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker

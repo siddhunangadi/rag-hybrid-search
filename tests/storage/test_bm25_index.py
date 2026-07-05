@@ -1,5 +1,3 @@
-import pytest
-
 from rag_hybrid_search.models import Chunk
 from rag_hybrid_search.storage.bm25_index import BM25Index
 

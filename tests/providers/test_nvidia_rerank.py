@@ -35,7 +35,7 @@ def test_rerank_calls_expected_endpoint_with_query_and_passages(provider, candid
     )
     mock_post = mocker.patch.object(httpx.Client, "post", return_value=mock_response)
 
-    result = provider.rerank("a query", candidates, top_n=2)
+    provider.rerank("a query", candidates, top_n=2)
 
     called_url = mock_post.call_args[0][0]
     assert called_url == "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking"

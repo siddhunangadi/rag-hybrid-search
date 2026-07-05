@@ -27,4 +27,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["rag_hybrid_search*"]
+include = ["rag_hybrid_search*", "rag_pipeline*"]

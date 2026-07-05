@@ -1,0 +1,58 @@
+from rag_pipeline.models import PromptContext
+from rag_pipeline.prompt_builder import build_prompt
+
+_EXPECTED_V1_PROMPT = """You are a retrieval assistant. Only answer using the CONTEXT below.
+
+Rules:
+- Cite every factual claim inline using its bracketed id, e.g. [d1].
+- Never invent a citation id that is not present in the CONTEXT.
+- If the CONTEXT does not support an answer, say you don't know.
+- Respond ONLY with JSON matching this shape, no prose wrapper, no markdown fences:
+  {"answer": "...", "claims": [{"text": "...", "citation_ids": ["d1"], "supporting_quote": "..."}]}
+
+CONTEXT:
+[d1]
+Employees get 20 days of paid leave.
+
+QUESTION:
+How many days of paid leave do employees get?"""
+
+
+def test_prompt_contains_system_instructions():
+    context = PromptContext(text="[d1]\nsome fact", doc_id_map={"d1": "c1"})
+    prompt = build_prompt("What is the fact?", context)
+    assert "Only answer using the CONTEXT" in prompt
+    assert "Never invent a citation id" in prompt
+
+
+def test_prompt_contains_numbered_context():
+    context = PromptContext(text="[d1]\nsome fact", doc_id_map={"d1": "c1"})
+    prompt = build_prompt("What is the fact?", context)
+    assert "[d1]" in prompt
+    assert "some fact" in prompt
+
+
+def test_prompt_handles_empty_context():
+    context = PromptContext(text="", doc_id_map={})
+    prompt = build_prompt("What is the fact?", context)
+    assert "QUESTION:" in prompt
+    assert "What is the fact?" in prompt
+
+
+def test_prompt_snapshot_v1():
+    context = PromptContext(
+        text="[d1]\nEmployees get 20 days of paid leave.", doc_id_map={"d1": "c1"}
+    )
+    prompt = build_prompt(
+        "How many days of paid leave do employees get?", context, prompt_version="v1"
+    )
+    assert prompt == _EXPECTED_V1_PROMPT
+
+
+def test_unknown_prompt_version_raises():
+    context = PromptContext(text="", doc_id_map={})
+    try:
+        build_prompt("q", context, prompt_version="v99")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "v99" in str(e)

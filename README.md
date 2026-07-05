@@ -152,6 +152,17 @@ curl http://localhost:8000/version
 {"name": "rag-hybrid-search", "version": "0.1.0"}
 ```
 
+## Frontend (Streamlit)
+
+A thin Streamlit UI (`ui/app.py`) over the deployed API — index documents and ask questions from a browser, no curl needed. It's a pure HTTP client: all logic still lives in the FastAPI service.
+
+```bash
+uv sync --extra ui
+uv run streamlit run ui/app.py
+```
+
+Defaults to the live deployment (`https://rag-hybrid-search.onrender.com`); the sidebar lets you point it at `http://localhost:8000` or any other instance instead.
+
 ## Benchmark
 
 Retrieval-quality regression check over a small fixed corpus: **Recall@3 = 1.00, MRR = 1.00** across 6 queries. See [docs/BENCHMARK.md](docs/BENCHMARK.md) for methodology, honest scope (small toy corpus, deterministic fake embeddings), and how to reproduce it (`uv run python -m scripts.benchmark`).

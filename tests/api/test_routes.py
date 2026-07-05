@@ -118,6 +118,35 @@ def test_answer_rejects_blank_question(client):
     assert response.status_code == 400
 
 
+def test_documents_reports_empty_corpus(client):
+    response = client.get("/documents")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"total_documents": 0, "total_chunks": 0, "documents": []}
+
+
+def test_documents_reports_indexed_corpus(client):
+    client.post(
+        "/index",
+        json={
+            "documents": [
+                {"filename": "leave-policy.md", "content": "Employees get 20 days of paid annual leave per year."},
+            ]
+        },
+    )
+
+    response = client.get("/documents")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_documents"] == 1
+    assert body["total_chunks"] >= 1
+    assert body["documents"][0]["filename"] == "leave-policy.md"
+    assert body["documents"][0]["chunk_count"] == body["total_chunks"]
+    assert body["documents"][0]["document_id"]
+
+
 def test_docs_endpoint_is_available(client):
     response = client.get("/docs")
 

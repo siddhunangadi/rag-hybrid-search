@@ -152,6 +152,16 @@ curl http://localhost:8000/health
 {"status": "ok", "generation_provider": "mock", "embedding_provider": "fake", "data_dir": "./data"}
 ```
 
+**`GET /documents`** — how many documents/chunks are currently indexed:
+
+```bash
+curl http://localhost:8000/documents
+```
+
+```json
+{"total_documents": 1, "total_chunks": 3, "documents": [{"document_id": "0198...", "filename": "leave-policy.md", "chunk_count": 3}]}
+```
+
 **`GET /version`** — package name and version:
 
 ```bash

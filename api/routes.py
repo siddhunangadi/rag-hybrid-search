@@ -12,6 +12,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from api.dependencies import Container, get_container
 from api.schemas import (
     AnswerRequest,
+    DocumentSummary,
+    DocumentsResponse,
     HealthResponse,
     IndexDocument,
     IndexRequest,
@@ -151,6 +153,25 @@ async def health(container: Container = Depends(get_container)) -> HealthRespons
         generation_provider=container.generation_provider_name,
         embedding_provider=container.embedding_provider_name,
         data_dir=container.settings.data_dir,
+    )
+
+
+@router.get("/documents", response_model=DocumentsResponse)
+async def list_documents(container: Container = Depends(get_container)) -> DocumentsResponse:
+    """Report how many documents/chunks are currently indexed."""
+    summaries = container.chunk_store.get_document_summaries()
+    documents = [
+        DocumentSummary(
+            document_id=s["document_id"],
+            filename=Path(s["source_path"]).name if s["source_path"] else s["document_id"],
+            chunk_count=s["chunk_count"],
+        )
+        for s in summaries
+    ]
+    return DocumentsResponse(
+        total_documents=len(documents),
+        total_chunks=sum(d.chunk_count for d in documents),
+        documents=documents,
     )
 
 

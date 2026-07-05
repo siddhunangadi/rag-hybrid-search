@@ -90,6 +90,25 @@ class SqliteChunkStore(ChunkStore):
         for row in rows:
             yield self._row_to_chunk(row)
 
+    def get_document_summaries(self) -> list[dict]:
+        """Aggregate chunk counts per document, for corpus-wide stats endpoints."""
+        rows = self._conn.execute(
+            """
+            SELECT document_id, source_path, COUNT(*) as chunk_count
+            FROM chunks
+            GROUP BY document_id
+            ORDER BY document_id
+            """
+        ).fetchall()
+        return [
+            {
+                "document_id": row["document_id"],
+                "source_path": row["source_path"],
+                "chunk_count": row["chunk_count"],
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def _row_to_chunk(row: sqlite3.Row) -> Chunk:
         return Chunk(

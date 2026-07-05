@@ -44,6 +44,22 @@ class IndexResponse(BaseModel):
     results: list[IndexResult]
 
 
+class DocumentSummary(BaseModel):
+    """Chunk-count summary for a single indexed document."""
+
+    document_id: str
+    filename: str
+    chunk_count: int
+
+
+class DocumentsResponse(BaseModel):
+    """Response body for GET /documents."""
+
+    total_documents: int
+    total_chunks: int
+    documents: list[DocumentSummary]
+
+
 class HealthResponse(BaseModel):
     """Response body for GET /health."""
 

@@ -68,7 +68,6 @@
   async function handleAskSubmit(event) {
     event.preventDefault();
     const questionInput = document.getElementById("question-input");
-    const maxChunksInput = document.getElementById("max-chunks-input");
     const verifyInput = document.getElementById("verify-input");
 
     const question = questionInput.value.trim();
@@ -77,11 +76,7 @@
     Ui.setAskLoading(true);
     Ui.hideAnswer();
     try {
-      const result = await Api.answer(
-        question,
-        Number(maxChunksInput.value),
-        verifyInput.checked
-      );
+      const result = await Api.answer(question, verifyInput.checked);
       Ui.renderAnswer(result);
     } catch (err) {
       Ui.toast(`Request failed: ${err.message}`, "error");

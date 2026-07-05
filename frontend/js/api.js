@@ -61,10 +61,10 @@ const Api = (() => {
         body: JSON.stringify({ documents }),
       }),
     uploadFiles,
-    answer: (question, maxChunks, verify) =>
+    answer: (question, verify) =>
       request("/answer", {
         method: "POST",
-        body: JSON.stringify({ question, max_chunks: maxChunks, verify }),
+        body: JSON.stringify({ question, verify }),
       }),
   };
 })();

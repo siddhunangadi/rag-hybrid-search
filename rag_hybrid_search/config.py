@@ -7,8 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RAG_")
 
-    provider: Literal["nvidia", "ollama"] = "nvidia"
+    provider: Literal["nvidia", "gemini"] = "gemini"
     nvidia_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
 
     chunking_strategy: Literal["fixed", "recursive", "semantic"] = "recursive"
     chunk_size: int = 500

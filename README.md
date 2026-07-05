@@ -68,6 +68,22 @@ print(result.confidence.overall) # 0.0-1.0
 print(result.verification)       # per-claim verification report
 ```
 
+### Real LLM provider
+
+Swap `MockProvider` for `GeminiProvider` to generate against a real model (free-tier API, no local install required):
+
+```bash
+export GEMINI_API_KEY=your_api_key
+```
+
+```python
+from rag_hybrid_search.providers.gemini import GeminiProvider
+
+pipeline = RagPipeline(retriever=retriever, generation_provider=GeminiProvider(api_key="..."))
+```
+
+`NvidiaProvider` (`rag_hybrid_search/providers/nvidia.py`) is also available behind the same `GenerationProvider` interface if you have an NVIDIA API key.
+
 ## Running tests
 
 ```bash

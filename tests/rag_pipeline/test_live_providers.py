@@ -1,32 +1,19 @@
 import os
 
-import httpx
 import pytest
 
+from rag_hybrid_search.providers.gemini import GeminiProvider
 from rag_hybrid_search.providers.nvidia import NvidiaProvider
-from rag_hybrid_search.providers.ollama import OllamaProvider
 from rag_pipeline.rag_pipeline import RagPipeline
 
 from tests.rag_pipeline.test_end_to_end import build_pipeline_and_retriever
 
 
-def _ollama_reachable(base_url: str) -> bool:
-    try:
-        httpx.get(f"{base_url}/api/tags", timeout=1.0).raise_for_status()
-        return True
-    except Exception:
-        return False
-
-
-_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
-
-
 @pytest.mark.skipif(
-    not _ollama_reachable(_OLLAMA_BASE_URL),
-    reason=f"no Ollama server reachable at {_OLLAMA_BASE_URL}",
+    not os.environ.get("GEMINI_API_KEY"),
+    reason="GEMINI_API_KEY not set",
 )
-def test_rag_pipeline_answers_with_real_ollama_provider(tmp_path):
+def test_rag_pipeline_answers_with_real_gemini_provider(tmp_path):
     fixtures_dir = tmp_path / "docs"
     fixtures_dir.mkdir()
     doc_path = fixtures_dir / "leave-policy.md"
@@ -35,9 +22,7 @@ def test_rag_pipeline_answers_with_real_ollama_provider(tmp_path):
     ingestion, retriever = build_pipeline_and_retriever(tmp_path)
     ingestion.ingest(str(doc_path))
 
-    provider = OllamaProvider(
-        base_url=_OLLAMA_BASE_URL, generation_model=_OLLAMA_MODEL, timeout=120.0
-    )
+    provider = GeminiProvider(api_key=os.environ["GEMINI_API_KEY"])
     pipeline = RagPipeline(retriever, provider)
 
     result = pipeline.answer("How many days of paid leave do employees get?")

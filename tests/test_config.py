@@ -6,7 +6,7 @@ from rag_hybrid_search.config import Settings
 
 def test_defaults():
     settings = Settings()
-    assert settings.provider == "nvidia"
+    assert settings.provider == "gemini"
     assert settings.chunking_strategy == "recursive"
     assert settings.rrf_dense_weight == 0.7
     assert settings.rrf_sparse_weight == 0.3

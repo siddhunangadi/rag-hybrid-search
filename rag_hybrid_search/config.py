@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     rrf_sparse_weight: float = 0.3
     rrf_k: int = 60
     rerank_top_n: int = 5
+    rerank_backend: Literal["passthrough", "cross_encoder", "nvidia"] = "passthrough"
 
     dedup_cosine_threshold: float = 0.95
     dedup_text_similarity_threshold: float = 0.9

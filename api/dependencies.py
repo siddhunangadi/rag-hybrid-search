@@ -16,6 +16,23 @@ Embedding provider:
        deterministic trigram-hash embedding that is NOT semantically
        meaningful, useful only for exercising retrieval plumbing without a
        real embedding model configured).
+
+Rerank provider: chosen via ``settings.rerank_backend`` (not auto-selected by
+key presence, unlike above — this trades off memory/latency/accuracy and
+should be an explicit choice):
+    - ``"passthrough"`` (default) -> ``PassthroughReranker``: no model, no
+      network call, just truncates to ``rerank_top_n`` by existing RRF score.
+      Safe for memory-constrained deployments (e.g. a 512Mi free-tier
+      instance, where loading a cross-encoder at startup causes an OOM crash
+      before the app can bind a port).
+    - ``"cross_encoder"`` -> ``CrossEncoderReranker``: local
+      sentence-transformers/torch model, most accurate, heaviest (needs
+      real memory headroom).
+    - ``"nvidia"`` -> ``NvidiaRerankProvider``: NVIDIA's hosted reranking API,
+      no local model. Requires ``settings.nvidia_api_key``. NOTE: this
+      integration's request/response contract is unverified against a live
+      call (documented in ``nvidia_rerank.py``) — smoke-test with a real key
+      before relying on it in production.
 """
 
 from dataclasses import dataclass
@@ -31,8 +48,9 @@ from rag_hybrid_search.ingestion.pipeline import IngestionPipeline
 from rag_hybrid_search.providers.base import EmbeddingProvider, GenerationProvider
 from rag_hybrid_search.providers.gemini import GeminiProvider
 from rag_hybrid_search.providers.nvidia import NvidiaProvider
+from rag_hybrid_search.providers.base import RerankProvider
 from rag_hybrid_search.retrieval.dense import DenseRetriever
-from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker
+from rag_hybrid_search.retrieval.passthrough_rerank import PassthroughReranker
 from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
@@ -102,6 +120,31 @@ def _select_embedding_provider(settings: Settings) -> tuple[EmbeddingProvider, s
     return FakeEmbeddingProvider(), "fake", None
 
 
+def _select_rerank_provider(settings: Settings) -> RerankProvider:
+    """Pick a reranker per ``settings.rerank_backend``.
+
+    Defaults to ``PassthroughReranker`` (no torch import, no model load) so the
+    API stays usable on memory-constrained deployments (e.g. a 512Mi free-tier
+    instance, where loading ``sentence-transformers``/torch at startup for
+    ``CrossEncoderReranker`` causes an out-of-memory crash before the app can
+    bind a port). Set ``RAG_RERANK_BACKEND=cross_encoder`` for real cross-encoder
+    reranking when running with enough memory headroom.
+    """
+    if settings.rerank_backend == "nvidia":
+        if not settings.nvidia_api_key:
+            raise ValueError(
+                "RAG_RERANK_BACKEND=nvidia requires RAG_NVIDIA_API_KEY to be set"
+            )
+        from rag_hybrid_search.providers.nvidia_rerank import NvidiaRerankProvider
+
+        return NvidiaRerankProvider(api_key=settings.nvidia_api_key)
+    if settings.rerank_backend == "cross_encoder":
+        from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker
+
+        return CrossEncoderReranker()
+    return PassthroughReranker()
+
+
 def build_container(settings: Settings | None = None) -> Container:
     """Construct all app-lifetime singletons for the given (or env-derived) settings."""
     settings = settings or Settings()
@@ -124,7 +167,7 @@ def build_container(settings: Settings | None = None) -> Container:
     retriever = HybridRetriever(
         dense_retriever=DenseRetriever(embedding_provider, vector_store, chunk_store),
         sparse_retriever=SparseRetriever(chunk_store, bm25_index),
-        rerank_provider=CrossEncoderReranker(),
+        rerank_provider=_select_rerank_provider(settings),
         dense_weight=settings.rrf_dense_weight,
         sparse_weight=settings.rrf_sparse_weight,
         rrf_k=settings.rrf_k,

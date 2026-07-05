@@ -33,21 +33,10 @@ class SemanticChunker(Chunker):
 
         embeddings = self._embedding_provider.embed(sentences)
 
-        similarities = [
-            _cosine(embeddings[i - 1], embeddings[i]) for i in range(1, len(sentences))
-        ]
-        lo, hi = min(similarities), max(similarities)
-        spread = hi - lo
-        # Normalize similarities relative to the document's own range so that
-        # boundary detection works regardless of the embedding provider's
-        # absolute similarity scale (some providers cluster all scores high).
-        normalized = [
-            1.0 if spread == 0 else (s - lo) / spread for s in similarities
-        ]
-
         groups: list[list[str]] = [[sentences[0]]]
-        for i, norm_similarity in enumerate(normalized, start=1):
-            if norm_similarity >= self._similarity_threshold:
+        for i in range(1, len(sentences)):
+            similarity = _cosine(embeddings[i - 1], embeddings[i])
+            if similarity >= self._similarity_threshold:
                 groups[-1].append(sentences[i])
             else:
                 groups.append([sentences[i]])

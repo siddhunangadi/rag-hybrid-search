@@ -84,6 +84,10 @@ pipeline = RagPipeline(retriever=retriever, generation_provider=GeminiProvider(a
 
 `NvidiaProvider` (`rag_hybrid_search/providers/nvidia.py`) is also available behind the same `GenerationProvider` interface if you have an NVIDIA API key.
 
+## Benchmark
+
+Retrieval-quality regression check over a small fixed corpus: **Recall@3 = 1.00, MRR = 1.00** across 6 queries. See [docs/BENCHMARK.md](docs/BENCHMARK.md) for methodology, honest scope (small toy corpus, deterministic fake embeddings), and how to reproduce it (`uv run python -m scripts.benchmark`).
+
 ## Running tests
 
 ```bash

@@ -12,10 +12,3 @@ services:
         sync: false
       - key: RAG_DATA_DIR
         value: /opt/render/project/data
-
-  - type: web
-    name: rag-hybrid-search-ui
-    runtime: docker
-    dockerfilePath: ./Dockerfile.ui
-    plan: free
-    healthCheckPath: /

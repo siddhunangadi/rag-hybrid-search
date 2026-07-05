@@ -1,13 +1,17 @@
 """FastAPI application entrypoint: wires the app-lifetime singletons and router."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import build_container
 from api.routes import router
 from rag_hybrid_search.config import Settings
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -29,6 +33,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(router)
+
+    if _FRONTEND_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+
     return app
 
 

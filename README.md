@@ -152,16 +152,18 @@ curl http://localhost:8000/version
 {"name": "rag-hybrid-search", "version": "0.1.0"}
 ```
 
-## Frontend (Streamlit)
+## Frontend
 
-A thin Streamlit UI (`ui/app.py`) over the deployed API — index documents and ask questions from a browser, no curl needed. It's a pure HTTP client: all logic still lives in the FastAPI service.
+A vanilla HTML/CSS/JS frontend (`frontend/`) — no framework, no build step. FastAPI serves it directly as static files at the app root (`api/main.py` mounts `frontend/` after the API routes, so `/health`, `/answer`, etc. still take precedence), so there's a single Render service for both the API and the UI.
 
-```bash
-uv sync --extra ui
-uv run streamlit run ui/app.py
-```
+- `frontend/index.html` — layout: sidebar (health/provider status, document upload, indexed-this-session list) + main area (question input, answer card with citations/confidence, collapsible developer panel showing the raw API response)
+- `frontend/css/styles.css` — design tokens (dark OLED palette, Inter typeface) and responsive layout
+- `frontend/css/components.css` — component styling
+- `frontend/js/config.js`, `api.js`, `ui.js`, `app.js` — config, thin fetch client, DOM rendering, event wiring — no business logic, just calls to `POST /index`, `POST /answer`, `GET /health`, `GET /version`
 
-Defaults to the live deployment (`https://rag-hybrid-search.onrender.com`); the sidebar lets you point it at `http://localhost:8000` or any other instance instead.
+Visit `http://localhost:8000/` (or the deployed URL) directly — no separate process to run.
+
+Note: the developer panel shows the real raw JSON response (confidence breakdown, claim verification) rather than per-chunk BM25/dense/RRF scores — the API doesn't currently expose retrieval-trace detail in `RagAnswer`, so the panel only surfaces what's actually returned.
 
 ## Benchmark
 

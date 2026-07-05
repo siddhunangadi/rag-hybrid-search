@@ -20,10 +20,6 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
 ]
-ui = [
-    "streamlit>=1.38",
-    "requests>=2.32",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -26,6 +26,32 @@ const Api = (() => {
     return body;
   }
 
+  async function uploadFiles(fileList) {
+    const formData = new FormData();
+    for (const file of fileList) {
+      formData.append("files", file);
+    }
+    // No Content-Type header here: the browser sets the multipart boundary itself.
+    const response = await fetch(`${CONFIG.API_BASE_URL}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (_err) {
+      // Non-JSON response (e.g. a 502 from a cold-starting free-tier host).
+    }
+
+    if (!response.ok) {
+      const detail = body && body.detail ? body.detail : response.statusText;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+
+    return body;
+  }
+
   return {
     getHealth: () => request("/health"),
     getVersion: () => request("/version"),
@@ -34,6 +60,7 @@ const Api = (() => {
         method: "POST",
         body: JSON.stringify({ documents }),
       }),
+    uploadFiles,
     answer: (question, maxChunks, verify) =>
       request("/answer", {
         method: "POST",

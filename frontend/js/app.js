@@ -25,27 +25,39 @@
     }
   }
 
+  function reportIndexResults(results) {
+    for (const result of results) {
+      Ui.addDocToList(result.filename, result.status);
+      if (result.status === "ready") {
+        Ui.toast(`Indexed "${result.filename}"`, "success");
+      } else {
+        Ui.toast(`Failed to index "${result.filename}": ${result.error}`, "error");
+      }
+    }
+  }
+
   async function handleIndexSubmit(event) {
     event.preventDefault();
     const filenameInput = document.getElementById("index-filename");
     const contentInput = document.getElementById("index-content");
+    const fileInput = document.getElementById("index-file");
 
-    const filename = filenameInput.value.trim();
+    const hasFiles = fileInput.files && fileInput.files.length > 0;
     const content = contentInput.value.trim();
-    if (!content) return;
+    if (!hasFiles && !content) return;
 
     Ui.setIndexLoading(true);
     try {
-      const response = await Api.indexDocuments([{ filename, content }]);
-      for (const result of response.results) {
-        Ui.addDocToList(result.filename, result.status);
-        if (result.status === "ready") {
-          Ui.toast(`Indexed "${result.filename}"`, "success");
-        } else {
-          Ui.toast(`Failed to index "${result.filename}": ${result.error}`, "error");
-        }
+      if (hasFiles) {
+        const response = await Api.uploadFiles(fileInput.files);
+        reportIndexResults(response.results);
+        fileInput.value = "";
+      } else {
+        const filename = filenameInput.value.trim();
+        const response = await Api.indexDocuments([{ filename, content }]);
+        reportIndexResults(response.results);
+        contentInput.value = "";
       }
-      contentInput.value = "";
     } catch (err) {
       Ui.toast(`Request failed: ${err.message}`, "error");
     } finally {

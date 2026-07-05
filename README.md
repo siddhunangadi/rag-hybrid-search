@@ -108,7 +108,7 @@ docker run --rm -p 8000:8000 rag-hybrid-search
 
 ### Endpoints
 
-**`POST /index`** — ingest one or more documents (`.md`, `.markdown`, `.html`, `.htm`, `.txt`):
+**`POST /index`** — ingest one or more documents as JSON text content (`.md`, `.markdown`, `.html`, `.htm`, `.txt`):
 
 ```bash
 curl -X POST http://localhost:8000/index \
@@ -118,6 +118,16 @@ curl -X POST http://localhost:8000/index \
 
 ```json
 {"results": [{"filename": "leave-policy.md", "status": "ready", "error": null}]}
+```
+
+**`POST /upload`** — ingest one or more real files as multipart/form-data (binary-safe: `.pdf`, `.csv`, `.xlsx`, `.docx`, plus the text formats above):
+
+```bash
+curl -F "files=@document.pdf" http://localhost:8000/upload
+```
+
+```json
+{"results": [{"filename": "document.pdf", "status": "ready", "error": null}]}
 ```
 
 **`POST /answer`** — ask a grounded question against the indexed corpus:
@@ -159,7 +169,7 @@ A vanilla HTML/CSS/JS frontend (`frontend/`) — no framework, no build step. Fa
 - `frontend/index.html` — layout: sidebar (health/provider status, document upload, indexed-this-session list) + main area (question input, answer card with citations/confidence, collapsible developer panel showing the raw API response)
 - `frontend/css/styles.css` — design tokens (dark OLED palette, Inter typeface) and responsive layout
 - `frontend/css/components.css` — component styling
-- `frontend/js/config.js`, `api.js`, `ui.js`, `app.js` — config, thin fetch client, DOM rendering, event wiring — no business logic, just calls to `POST /index`, `POST /answer`, `GET /health`, `GET /version`
+- `frontend/js/config.js`, `api.js`, `ui.js`, `app.js` — config, thin fetch client, DOM rendering, event wiring — no business logic, just calls to `POST /index`, `POST /upload`, `POST /answer`, `GET /health`, `GET /version`
 
 Visit `http://localhost:8000/` (or the deployed URL) directly — no separate process to run.
 
@@ -205,7 +215,7 @@ rag_pipeline/
   rag_pipeline.py         orchestrator
 api/
   main.py           FastAPI app instance + startup wiring
-  routes.py         /answer, /index, /health, /version handlers
+  routes.py         /answer, /index, /upload, /health, /version handlers
   schemas.py        request/response pydantic models
   dependencies.py   singleton construction + provider fallback selection
 docs/superpowers/

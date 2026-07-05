@@ -9,7 +9,7 @@ class Document(BaseModel):
     document_id: str
     source_path: str
     content: str
-    format: Literal["markdown", "html", "text", "pdf"]
+    format: Literal["markdown", "html", "text", "pdf", "csv", "xlsx", "docx"]
 
 
 class Chunk(BaseModel):

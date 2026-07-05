@@ -7,7 +7,7 @@ Handlers only translate HTTP <-> pipeline calls; business logic lives in
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from api.dependencies import Container, get_container
 from api.schemas import (
@@ -20,9 +20,13 @@ from api.schemas import (
     VersionResponse,
 )
 from rag_hybrid_search.ingestion.loaders.base import Loader
+from rag_hybrid_search.ingestion.loaders.csv_loader import CsvLoader
+from rag_hybrid_search.ingestion.loaders.docx_loader import DocxLoader
 from rag_hybrid_search.ingestion.loaders.html import HtmlLoader
 from rag_hybrid_search.ingestion.loaders.markdown import MarkdownLoader
+from rag_hybrid_search.ingestion.loaders.pdf import PdfLoader
 from rag_hybrid_search.ingestion.loaders.text import TextLoader
+from rag_hybrid_search.ingestion.loaders.xlsx_loader import XlsxLoader
 from rag_hybrid_search.models import IndexStatus
 from rag_pipeline.models import RagAnswer
 
@@ -35,6 +39,10 @@ _LOADERS_BY_SUFFIX: dict[str, Loader] = {
     ".html": HtmlLoader(),
     ".htm": HtmlLoader(),
     ".txt": TextLoader(),
+    ".pdf": PdfLoader(),
+    ".csv": CsvLoader(),
+    ".xlsx": XlsxLoader(),
+    ".docx": DocxLoader(),
 }
 
 router = APIRouter()
@@ -65,6 +73,25 @@ def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
         )
     except Exception as e:  # noqa: BLE001 - deliberately isolate per-document failures
         return IndexResult(filename=document.filename, status="failed", error=str(e))
+
+
+async def _ingest_upload(file: UploadFile, container: Container) -> IndexResult:
+    """Write an uploaded file's raw bytes to disk and ingest it, catching per-item errors."""
+    filename = file.filename or "upload"
+    try:
+        loader = _loader_for_filename(filename)
+        dest_path = container.uploads_dir / filename
+        contents = await file.read()
+        dest_path.write_bytes(contents)
+
+        ingestion_pipeline = container.build_ingestion_pipeline(loader)
+        status = ingestion_pipeline.ingest(str(dest_path))
+        return IndexResult(
+            filename=filename,
+            status="ready" if status == IndexStatus.READY else "failed",
+        )
+    except Exception as e:  # noqa: BLE001 - deliberately isolate per-file failures
+        return IndexResult(filename=filename, status="failed", error=str(e))
 
 
 @router.post("/answer", response_model=RagAnswer)
@@ -99,6 +126,20 @@ async def index_documents(
     on ``answer`` above.
     """
     results = [_ingest_one(document, container) for document in request.documents]
+    return IndexResponse(results=results)
+
+
+@router.post("/upload", response_model=IndexResponse)
+async def upload_documents(
+    files: list[UploadFile] = File(...), container: Container = Depends(get_container)
+) -> IndexResponse:
+    """Ingest one or more uploaded files as raw bytes (binary-safe, for pdf/xlsx/docx/etc).
+
+    Complements ``POST /index`` (JSON, text-only): this endpoint accepts real
+    file bytes via multipart/form-data so binary formats can be ingested.
+    Per-file failures are reported, not raised.
+    """
+    results = [await _ingest_upload(file, container) for file in files]
     return IndexResponse(results=results)
 
 

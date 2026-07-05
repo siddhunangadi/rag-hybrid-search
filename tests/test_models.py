@@ -27,9 +27,9 @@ def test_document_rejects_bad_format():
     with pytest.raises(ValidationError):
         Document(
             document_id="a" * 64,
-            source_path="/docs/readme.docx",
+            source_path="/docs/readme.rtf",
             content="hi",
-            format="docx",
+            format="rtf",
         )
 
 

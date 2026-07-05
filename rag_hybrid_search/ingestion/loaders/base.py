@@ -6,7 +6,7 @@ from rag_hybrid_search.models import Document
 
 
 class Loader(ABC):
-    format: Literal["markdown", "html", "text", "pdf"]
+    format: Literal["markdown", "html", "text", "pdf", "csv", "xlsx", "docx"]
 
     @abstractmethod
     def load(self, path: str) -> Document:

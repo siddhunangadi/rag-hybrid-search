@@ -27,10 +27,6 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_path ON chunks(source_path);
-CREATE INDEX IF NOT EXISTS idx_chunks_legal_regulation ON chunks(legal_regulation);
-CREATE INDEX IF NOT EXISTS idx_chunks_legal_jurisdiction ON chunks(legal_jurisdiction);
-CREATE INDEX IF NOT EXISTS idx_chunks_legal_article ON chunks(legal_article);
-CREATE INDEX IF NOT EXISTS idx_chunks_legal_document_type ON chunks(legal_document_type);
 """
 
 _LEGAL_FILTER_COLUMNS = {
@@ -44,12 +40,44 @@ _LEGAL_FILTER_COLUMNS = {
 }
 
 
+_LEGAL_COLUMNS = [
+    "legal_regulation",
+    "legal_version",
+    "legal_jurisdiction",
+    "legal_article",
+    "legal_section",
+    "legal_clause",
+    "legal_effective_date",
+    "legal_document_type",
+]
+
+
 class SqliteChunkStore(ChunkStore):
     def __init__(self, db_path: str):
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate_legal_columns()
         self._conn.commit()
+
+    def _migrate_legal_columns(self) -> None:
+        """Defensive migration: adds legal_* columns to a chunks table created
+        by the pre-legal-metadata schema (CREATE TABLE IF NOT EXISTS is a no-op
+        against an existing table, so old databases never gain these columns)."""
+        for column in _LEGAL_COLUMNS:
+            try:
+                self._conn.execute(f"ALTER TABLE chunks ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc):
+                    raise
+        self._conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_chunks_legal_regulation ON chunks(legal_regulation);
+            CREATE INDEX IF NOT EXISTS idx_chunks_legal_jurisdiction ON chunks(legal_jurisdiction);
+            CREATE INDEX IF NOT EXISTS idx_chunks_legal_article ON chunks(legal_article);
+            CREATE INDEX IF NOT EXISTS idx_chunks_legal_document_type ON chunks(legal_document_type);
+            """
+        )
 
     def put(self, chunk: Chunk, source_path: Optional[str] = None) -> None:
         lm = chunk.legal_metadata
@@ -173,7 +201,7 @@ class SqliteChunkStore(ChunkStore):
     @staticmethod
     def _row_to_chunk(row: sqlite3.Row) -> Chunk:
         legal_metadata = None
-        if row["legal_regulation"] is not None or row["legal_document_type"] is not None or row["legal_article"] is not None:
+        if any(row[col] is not None for col in _LEGAL_COLUMNS):
             legal_metadata = LegalMetadata(
                 document_id=row["document_id"],
                 document_title=row["document_id"],

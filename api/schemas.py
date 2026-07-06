@@ -1,10 +1,12 @@
 """Pydantic request/response models for the API layer."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
 _DEFAULT_MAX_CHUNKS = 5
+
+DocumentTypeParam = Literal["general", "regulation", "policy", "contract", "standard", "guideline"]
 
 
 class AnswerRequest(BaseModel):
@@ -22,6 +24,11 @@ class IndexDocument(BaseModel):
 
     filename: str = Field(..., min_length=1, description="Filename, including extension, used to pick a loader.")
     content: str = Field(..., description="Raw text content of the document.")
+    document_type: DocumentTypeParam = Field(
+        default="general",
+        description="Document category. 'regulation' routes ingestion through the "
+        "clause-aware compliance chunker instead of the default chunker.",
+    )
 
 
 class IndexRequest(BaseModel):

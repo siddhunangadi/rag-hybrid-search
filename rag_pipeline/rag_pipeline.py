@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from rag_hybrid_search.compliance.citation_mapper import build_citations
+from rag_hybrid_search.compliance.query_router import route_query
 from rag_pipeline.confidence_scorer import score_confidence
 from rag_pipeline.context_builder import build_context
 from rag_pipeline.generation_provider import GenerationProvider
@@ -26,13 +27,17 @@ _ZERO_CONFIDENCE = ConfidenceScores(retrieval=0.0, citations=0.0, coverage=0.0, 
 
 
 class RagPipeline:
-    def __init__(self, retriever, generation_provider: GenerationProvider, prompt_version: str = "v1"):
+    def __init__(self, retriever, generation_provider: GenerationProvider, chunk_store=None, prompt_version: str = "v1"):
         self._retriever = retriever
         self._generation_provider = generation_provider
+        self._chunk_store = chunk_store
         self._prompt_version = prompt_version
 
     def answer(self, question: str, max_chunks: int = 5, verify: bool = True) -> RagAnswer:
-        retrieved_chunks, _trace = self._retriever.retrieve(question)
+        if self._chunk_store is not None:
+            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever)
+        else:
+            retrieved_chunks, _trace = self._retriever.retrieve(question)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
 
         context = build_context(retrieved_chunks)

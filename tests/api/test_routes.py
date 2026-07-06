@@ -151,3 +151,66 @@ def test_docs_endpoint_is_available(client):
     response = client.get("/docs")
 
     assert response.status_code == 200
+
+
+_GDPR_TEXT = """Article 5
+
+1. Personal data shall be processed lawfully, fairly and in a transparent manner.
+
+Article 17
+
+1. The data subject shall have the right to obtain from the controller the erasure of personal data.
+"""
+
+
+def test_index_with_document_type_regulation_uses_clause_chunker(client):
+    response = client.post(
+        "/index",
+        json={
+            "documents": [
+                {"filename": "gdpr.txt", "content": _GDPR_TEXT, "document_type": "regulation"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["status"] == "ready"
+
+    documents_response = client.get("/documents")
+    assert documents_response.json()["total_chunks"] >= 2
+
+
+def test_index_without_document_type_defaults_to_general_chunker(client):
+    response = client.post(
+        "/index",
+        json={
+            "documents": [
+                {"filename": "leave-policy.md", "content": "Employees get 20 days of paid annual leave per year."},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["status"] == "ready"
+
+
+def test_answer_show_article_returns_only_matching_article_via_structured_citations(client):
+    client.post(
+        "/index",
+        json={
+            "documents": [
+                {"filename": "gdpr.txt", "content": _GDPR_TEXT, "document_type": "regulation"},
+            ]
+        },
+    )
+
+    response = client.post(
+        "/answer",
+        json={"question": "Show Article 17", "verify": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    structured_citations = body["structured_citations"]
+    assert len(structured_citations) >= 1
+    assert all(c["article"] == "17" for c in structured_citations)

@@ -7,13 +7,14 @@ Handlers only translate HTTP <-> pipeline calls; business logic lives in
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from api.dependencies import Container, get_container
 from api.schemas import (
     AnswerRequest,
     DocumentSummary,
     DocumentsResponse,
+    DocumentTypeParam,
     HealthResponse,
     IndexDocument,
     IndexRequest,
@@ -21,6 +22,8 @@ from api.schemas import (
     IndexResult,
     VersionResponse,
 )
+from rag_hybrid_search.compliance.clause_chunker import ClauseChunker
+from rag_hybrid_search.ingestion.chunkers.base import Chunker
 from rag_hybrid_search.ingestion.loaders.base import Loader
 from rag_hybrid_search.ingestion.loaders.csv_loader import CsvLoader
 from rag_hybrid_search.ingestion.loaders.docx_loader import DocxLoader
@@ -60,6 +63,19 @@ def _loader_for_filename(filename: str) -> Loader:
     return loader
 
 
+def _chunker_for_document_type(document_type: DocumentTypeParam, document_title: str) -> Chunker | None:
+    """Pick a compliance-aware chunker for regulation-like documents, else the container default.
+
+    Returns ``None`` (meaning "use the container's default chunker") for
+    ``"general"`` so existing behavior is unchanged; any other
+    ``document_type`` routes through ``ClauseChunker`` for clause-aware
+    chunking and legal metadata tagging.
+    """
+    if document_type == "general":
+        return None
+    return ClauseChunker(document_title=document_title, document_type=document_type)
+
+
 def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
     """Write a single uploaded document to disk and ingest it, catching per-item errors."""
     try:
@@ -67,7 +83,8 @@ def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
         dest_path = container.uploads_dir / document.filename
         dest_path.write_text(document.content, encoding="utf-8")
 
-        ingestion_pipeline = container.build_ingestion_pipeline(loader)
+        chunker = _chunker_for_document_type(document.document_type, document.filename)
+        ingestion_pipeline = container.build_ingestion_pipeline(loader, chunker=chunker)
         status = ingestion_pipeline.ingest(str(dest_path))
         return IndexResult(
             filename=document.filename,
@@ -77,7 +94,9 @@ def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
         return IndexResult(filename=document.filename, status="failed", error=str(e))
 
 
-async def _ingest_upload(file: UploadFile, container: Container) -> IndexResult:
+async def _ingest_upload(
+    file: UploadFile, container: Container, document_type: DocumentTypeParam = "general"
+) -> IndexResult:
     """Write an uploaded file's raw bytes to disk and ingest it, catching per-item errors."""
     filename = file.filename or "upload"
     try:
@@ -86,7 +105,8 @@ async def _ingest_upload(file: UploadFile, container: Container) -> IndexResult:
         contents = await file.read()
         dest_path.write_bytes(contents)
 
-        ingestion_pipeline = container.build_ingestion_pipeline(loader)
+        chunker = _chunker_for_document_type(document_type, filename)
+        ingestion_pipeline = container.build_ingestion_pipeline(loader, chunker=chunker)
         status = ingestion_pipeline.ingest(str(dest_path))
         return IndexResult(
             filename=filename,
@@ -133,15 +153,21 @@ async def index_documents(
 
 @router.post("/upload", response_model=IndexResponse)
 async def upload_documents(
-    files: list[UploadFile] = File(...), container: Container = Depends(get_container)
+    files: list[UploadFile] = File(...),
+    document_type: DocumentTypeParam = Form(default="general"),
+    container: Container = Depends(get_container),
 ) -> IndexResponse:
     """Ingest one or more uploaded files as raw bytes (binary-safe, for pdf/xlsx/docx/etc).
 
     Complements ``POST /index`` (JSON, text-only): this endpoint accepts real
     file bytes via multipart/form-data so binary formats can be ingested.
     Per-file failures are reported, not raised.
+
+    ``document_type`` applies to every file in this request (multipart form
+    data has no per-file metadata slot); pass ``"regulation"`` to route all
+    of them through the clause-aware compliance chunker.
     """
-    results = [await _ingest_upload(file, container) for file in files]
+    results = [await _ingest_upload(file, container, document_type) for file in files]
     return IndexResponse(results=results)
 
 

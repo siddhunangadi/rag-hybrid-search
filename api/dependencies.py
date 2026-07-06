@@ -82,17 +82,22 @@ class Container:
     rag_pipeline: RagPipeline
     uploads_dir: Path
 
-    def build_ingestion_pipeline(self, loader: Loader) -> IngestionPipeline:
+    def build_ingestion_pipeline(self, loader: Loader, chunker: Chunker | None = None) -> IngestionPipeline:
         """Build an ``IngestionPipeline`` for a specific loader, reusing shared singletons.
 
         ``IngestionPipeline.ingest`` needs a loader matched to the document's
         format (markdown/html/text/pdf), so routes.py picks one per uploaded
         file and calls this to get a pipeline wired against the shared
         chunk store, index manager, and embedding provider.
+
+        ``chunker`` overrides the container's default chunker for this one
+        pipeline — routes.py passes a ``ClauseChunker`` here when a document
+        is ingested with ``document_type="regulation"``, leaving the shared
+        default chunker untouched for every other document.
         """
         return IngestionPipeline(
             loader=loader,
-            chunker=self.chunker,
+            chunker=chunker or self.chunker,
             embedding_provider=self.embedding_provider,
             chunk_store=self.chunk_store,
             index_manager=self.index_manager,
@@ -175,7 +180,7 @@ def build_container(settings: Settings | None = None) -> Container:
         sparse_k=settings.sparse_k,
         rerank_top_n=settings.rerank_top_n,
     )
-    rag_pipeline = RagPipeline(retriever, generation_provider)
+    rag_pipeline = RagPipeline(retriever, generation_provider, chunk_store=chunk_store)
 
     return Container(
         settings=settings,

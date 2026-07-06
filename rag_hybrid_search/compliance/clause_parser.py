@@ -11,6 +11,7 @@ _SECTION_RE = re.compile(r"^(?:Section|SECTION|Sec\.)\s+([\d.]+)\s*$", re.MULTIL
 _CHAPTER_RE = re.compile(r"^(?:Chapter|CHAPTER)\s+([IVXLCDM]+|\d+)\s*$", re.MULTILINE)
 _ANNEX_RE = re.compile(r"^(?:Annex|ANNEX|Appendix|APPENDIX)\s+([A-Za-z0-9]+)\s*$", re.MULTILINE)
 _CLAUSE_RE = re.compile(r"^\(?(\d+(?:\.\d+)*(?:\([a-z]\))?)\)?[\s.:]", re.MULTILINE)
+_LETTER_CLAUSE_RE = re.compile(r"^\(([a-z])\)[\s.:]", re.MULTILINE)
 
 _HEADING_PATTERNS = [
     ("article", _ARTICLE_RE),
@@ -42,7 +43,7 @@ def parse_clauses(text: str, document_id: str, document_title: str) -> ClausePar
             text=text.strip(),
             metadata=LegalMetadata(document_id=document_id, document_title=document_title),
         )
-        return ClauseParseResult(clauses=[span], confidence=0.0)
+        return ClauseParseResult(clauses=[span], confidence=0.0, fallback_used=True)
 
     boundaries = [m[0] for m in matches] + [len(text)]
     clauses: list[ClauseSpan] = []
@@ -54,10 +55,14 @@ def parse_clauses(text: str, document_id: str, document_title: str) -> ClausePar
         block = text[start:end].strip()
         if label == "article":
             current_article = value
+            current_section = None
         elif label == "section":
             current_section = value
+            current_article = None
 
-        sub_clauses = list(_CLAUSE_RE.finditer(block))
+        numbered = [(sc.start(), "num", sc.group(1)) for sc in _CLAUSE_RE.finditer(block)]
+        lettered = [(sc.start(), "letter", sc.group(1)) for sc in _LETTER_CLAUSE_RE.finditer(block)]
+        sub_clauses = sorted(numbered + lettered, key=lambda t: t[0])
         if not sub_clauses:
             clauses.append(
                 ClauseSpan(
@@ -72,13 +77,25 @@ def parse_clauses(text: str, document_id: str, document_title: str) -> ClausePar
             )
             continue
 
-        sub_boundaries = [sc.start() for sc in sub_clauses] + [len(block)]
-        for j, sc in enumerate(sub_clauses):
-            sub_text = block[sc.start() : sub_boundaries[j + 1]].strip()
-            clause_number = sc.group(1)
-            full_clause = (
-                f"{current_article}.{clause_number}" if current_article else clause_number
-            )
+        sub_boundaries = [sc[0] for sc in sub_clauses] + [len(block)]
+        last_number: str | None = None
+        for j, (sc_start, kind, sc_value) in enumerate(sub_clauses):
+            sub_text = block[sc_start : sub_boundaries[j + 1]].strip()
+            if kind == "num":
+                last_number = sc_value
+                full_clause = (
+                    f"{current_article}.{sc_value}" if current_article else sc_value
+                )
+            else:
+                letter = sc_value
+                if last_number is not None:
+                    full_clause = (
+                        f"{current_article}.{last_number}({letter})"
+                        if current_article
+                        else f"{last_number}({letter})"
+                    )
+                else:
+                    full_clause = f"({letter})"
             clauses.append(
                 ClauseSpan(
                     text=sub_text,

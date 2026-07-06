@@ -3,6 +3,8 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from rag_hybrid_search.compliance.regulation_models import Citation
+
 
 class Claim(BaseModel):
     text: str
@@ -49,6 +51,7 @@ class ConfidenceScores(BaseModel):
 class RagAnswer(BaseModel):
     answer: Optional[str]
     citations: list[str]
+    structured_citations: list[Citation] = []
     confidence: ConfidenceScores
     verification: VerificationReport
     error: Optional[str] = None

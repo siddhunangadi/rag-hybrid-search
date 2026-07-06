@@ -94,8 +94,7 @@ def route_query(
     if intent.kind in ("metadata", "mixed"):
         matched_ids = {c.chunk_id for c in chunk_store.get_by_legal_metadata(intent.filters)}
         results, trace = retriever.retrieve(question)
-        if matched_ids:
-            results = [r for r in results if r.chunk.chunk_id in matched_ids]
+        results = [r for r in results if r.chunk.chunk_id in matched_ids]
         return results, trace
 
     return retriever.retrieve(question)

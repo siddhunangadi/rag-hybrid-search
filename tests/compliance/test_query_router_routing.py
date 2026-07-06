@@ -54,3 +54,29 @@ def test_mixed_query_filters_then_retrieves():
     chunk_store.get_by_legal_metadata.assert_called_once_with({"article": "17"})
     retriever.retrieve.assert_called_once()
     assert results[0].chunk.chunk_id == "c3"
+
+
+def test_metadata_query_with_no_matching_chunks_returns_empty_not_unfiltered():
+    chunk_store = MagicMock()
+    chunk_store.get_by_legal_metadata.return_value = []
+    retriever = MagicMock()
+    retriever.retrieve.return_value = ([_retrieved("c9"), _retrieved("c10")], RetrievalTrace())
+
+    results, trace = route_query("Show only HIPAA documents", chunk_store, retriever)
+
+    chunk_store.get_by_legal_metadata.assert_called_once_with({"regulation": "HIPAA"})
+    retriever.retrieve.assert_called_once_with("Show only HIPAA documents")
+    assert results == []
+
+
+def test_mixed_query_with_no_matching_chunks_returns_empty_not_unfiltered():
+    chunk_store = MagicMock()
+    chunk_store.get_by_legal_metadata.return_value = []
+    retriever = MagicMock()
+    retriever.retrieve.return_value = ([_retrieved("c11"), _retrieved("c12")], RetrievalTrace())
+
+    results, trace = route_query("Explain Article 17 in plain terms", chunk_store, retriever)
+
+    chunk_store.get_by_legal_metadata.assert_called_once_with({"article": "17"})
+    retriever.retrieve.assert_called_once_with("Explain Article 17 in plain terms")
+    assert results == []

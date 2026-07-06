@@ -4,6 +4,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, model_validator
 
+from rag_hybrid_search.compliance.regulation_models import LegalMetadata
+
 
 class Document(BaseModel):
     document_id: str
@@ -21,6 +23,7 @@ class Chunk(BaseModel):
     heading: Optional[str] = None
     page: Optional[int] = None
     char_count: int
+    legal_metadata: Optional[LegalMetadata] = None
 
 
 class EmbeddingRecord(BaseModel):

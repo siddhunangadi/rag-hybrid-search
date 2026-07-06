@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
+from rag_hybrid_search.compliance.citation_mapper import build_citations
 from rag_pipeline.confidence_scorer import score_confidence
 from rag_pipeline.context_builder import build_context
 from rag_pipeline.generation_provider import GenerationProvider
@@ -58,10 +59,11 @@ class RagPipeline:
             )
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
+        structured_citations = build_citations(retrieved_chunks)
 
         return RagAnswer(
-            answer=draft.answer, citations=citations, confidence=confidence,
-            verification=verification, error=parse_error,
+            answer=draft.answer, citations=citations, structured_citations=structured_citations,
+            confidence=confidence, verification=verification, error=parse_error,
         )
 
     def _parse_draft(self, raw_output: str) -> tuple[RagAnswerDraft, str | None]:

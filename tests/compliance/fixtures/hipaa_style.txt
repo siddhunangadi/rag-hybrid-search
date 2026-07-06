@@ -1,0 +1,9 @@
+Section 164.502
+
+(a) Standard. A covered entity may not use or disclose protected health information.
+
+(b) Implementation specification: Minimum necessary applies.
+
+Section 164.508
+
+(a) Standard: authorization for uses and disclosures.

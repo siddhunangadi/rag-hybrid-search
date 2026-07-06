@@ -40,24 +40,28 @@ rag_hybrid_search/
 
 ```python
 class LegalMetadata(BaseModel):
-    regulation: str | None        # e.g. "GDPR"
-    jurisdiction: str | None      # e.g. "EU"
+    regulation: str | None         # e.g. "GDPR"
+    version: str | None            # e.g. "2025", "2022" — regulation edition, not our schema version
+    jurisdiction: str | None       # e.g. "EU"
     article: str | None
     section: str | None
-    clause: str | None            # e.g. "5.2(a)"
-    effective_date: str | None
+    clause: str | None             # e.g. "5.2(a)"
+    effective_date: date | None
     document_id: str
     document_title: str
+    document_type: Literal["regulation", "policy", "contract", "standard", "guideline"] | None
     page: int | None
 
 class ClauseParseResult(BaseModel):
     clauses: list[ClauseSpan]      # text span + LegalMetadata per clause
-    confidence: float
-    parser: Literal["regex"]
+    confidence: float              # 0.0-0.4 poor, 0.4-0.7 acceptable, 0.7-1.0 high confidence
+    parser: Literal["regex", "gemini"]   # only "regex" produced in v1; "gemini" reserved for future fallback
     fallback_used: bool = False    # always False in v1; reserved for future LLM fallback
 
 class Citation(BaseModel):
+    citation_id: str               # stable ID for frontend expand/highlight/bookmark, independent of chunk_id
     regulation: str | None
+    version: str | None
     jurisdiction: str | None
     article: str | None
     section: str | None
@@ -65,13 +69,18 @@ class Citation(BaseModel):
     page: int | None
     document_id: str
     document_title: str
-    effective_date: str | None
+    document_type: Literal["regulation", "policy", "contract", "standard", "guideline"] | None
+    effective_date: date | None
     chunk_id: str
     confidence: float
     display: str   # e.g. "GDPR Art. 17(3)(b), p.42"
 ```
 
 `LegalMetadata` fields are all optional — a non-legal document ingested through the same pipeline just gets all-null legal metadata and behaves exactly as it does today.
+
+`version` tracks the regulation's own edition/revision (e.g. "GDPR 2025", "ISO27001:2022"), not this spec's schema version — needed now so v2.1's clause diff engine doesn't require a schema migration later.
+
+`LegalMetadata` fields (particularly `regulation`, `jurisdiction`, `article`, `section`, `clause`, `document_type`) must be added as indexed Chroma metadata fields, not just stored as opaque payload — otherwise structured/metadata queries degrade to a full collection scan instead of a metadata lookup.
 
 ### 2. `clause_parser.py`
 
@@ -91,8 +100,9 @@ Wiring: `ingestion/pipeline.py` gets a mode flag (e.g. detected from document me
 
 Classifies incoming questions into:
 - **Structured**: matches a legal reference pattern directly (`"Show Article 17"`, `"clause 5.2(a)"`) → filter chunk store by `LegalMetadata` fields (exact match on regulation/article/section/clause/jurisdiction), no embedding search.
-- **Semantic**: no structured reference detected → existing dense+sparse+rerank pipeline, completely unchanged.
-- **Mixed**: contains both a structured reference and additional intent (`"Explain Article 17"`, `"What changed in the data retention clause of GDPR?"`) → filter candidate set by metadata first, then run existing hybrid retrieval + rerank pipeline scoped to that filtered subset only.
+- **Metadata**: no clause-level reference, but a scope/filter constraint (`"Show only HIPAA"`, `"only EU regulations"`, `"search only policies"`) → filter chunk store by `LegalMetadata` fields (regulation/jurisdiction/document_type), then run existing hybrid retrieval + rerank pipeline scoped to that filtered subset.
+- **Semantic**: no structured reference or metadata filter detected → existing dense+sparse+rerank pipeline, completely unchanged.
+- **Mixed**: contains both a structured clause reference and additional intent (`"Explain Article 17"`, `"What changed in the data retention clause of GDPR?"`) → filter candidate set by metadata first, then run existing hybrid retrieval + rerank pipeline scoped to that filtered subset only.
 
 This sits in front of `retrieval/retriever.py` as a routing layer; it doesn't modify `dense.py`/`sparse.py`/`fusion.py`/`rerank.py` internals.
 
@@ -103,19 +113,46 @@ Takes retrieved chunks (post-rerank) and their `LegalMetadata`, produces `Citati
 ## Data flow
 
 ```
-Document (PDF/DOCX/HTML)
-  → existing loader (unchanged)
-  → clause_parser (regex, confidence score)
-  → clause_chunker (clause-scoped chunks + LegalMetadata)
-  → existing storage (chroma_store + bm25_index, metadata now includes LegalMetadata)
+PDF / DOCX / HTML
+        │
+        ▼
+ Existing Loader (unchanged)
+        │
+        ▼
+  Clause Parser (regex, confidence score)
+        │
+        ▼
+  Clause Chunker (clause-scoped chunks + LegalMetadata)
+        │
+        ▼
+ Existing Storage (chroma_store + bm25_index,
+ metadata now includes indexed LegalMetadata)
+
 
 Query
-  → query_router (structured / semantic / mixed)
-      structured → metadata filter only
-      semantic   → existing dense+sparse+fusion+rerank (unchanged)
-      mixed      → metadata filter → existing dense+sparse+fusion+rerank on filtered subset
-  → citation_mapper → Citation objects
-  → existing answer generation, citation verification (unchanged, now receives structured Citations)
+        │
+        ▼
+   Query Router
+        │
+   ┌────┼─────────┬──────────┐
+   ▼    ▼         ▼          ▼
+structured  metadata     semantic     mixed
+   │          │             │           │
+   │          │             │           │
+metadata   metadata      existing    metadata filter
+filter     filter  →     hybrid      → existing hybrid
+only       existing      pipeline    pipeline on subset
+           hybrid on     (unchanged)
+           subset
+   │          │             │           │
+   └────┴─────┴─────────────┘
+              │
+              ▼
+       Citation Mapper → Citation objects (with citation_id)
+              │
+              ▼
+ Existing answer generation, citation verification
+ (unchanged, now receives structured Citations)
 ```
 
 ## Error handling
@@ -128,10 +165,14 @@ Query
 
 - Unit tests for `clause_parser`: fixtures covering GDPR-style, HIPAA-style, numbered-list-only, and unstructured/no-numbering documents; assert correct clause boundaries and confidence scores.
 - Unit tests for `clause_chunker`: assert clause-to-chunk mapping, metadata attachment, fallback path for unparseable docs.
-- Unit tests for `query_router`: table of queries → expected classification (structured/semantic/mixed).
-- Unit tests for `citation_mapper`: assert `Citation` object construction and `display` string rendering, including graceful degradation for missing fields.
-- Integration test: ingest a synthetic multi-article regulation fixture end-to-end, ask a structured query ("Show Article 5"), a semantic query, and a mixed query, assert correct chunks/citations returned.
+- Unit tests for `query_router`: table of queries → expected classification (structured/metadata/semantic/mixed).
+- Unit tests for `citation_mapper`: assert `Citation` object construction (including unique `citation_id` generation, e.g. `uuid4` str) and `display` string rendering, including graceful degradation for missing fields.
+- Integration test: ingest a synthetic multi-article regulation fixture end-to-end, ask a structured query ("Show Article 5"), a metadata-filter query ("only HIPAA"), a semantic query, and a mixed query, assert correct chunks/citations returned.
 - Regression check: existing non-legal ingestion/retrieval test suite (142 tests per last cleanup) must stay green — this spec is additive only.
+
+## Backward compatibility guarantee
+
+The `compliance/` package SHALL NOT modify any existing ingestion, retrieval, storage, generation, or API logic. It extends the existing architecture solely through well-defined extension points (chunker selection in `ingestion/pipeline.py`, a routing layer in front of `retrieval/retriever.py`, additive fields on API response schemas). General-purpose RAG behavior remains 100% backward compatible — existing tests must stay green with zero modification.
 
 ## Open questions / explicitly deferred
 

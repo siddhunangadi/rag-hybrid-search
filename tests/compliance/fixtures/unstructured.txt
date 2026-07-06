@@ -1,0 +1,3 @@
+This is a plain internal memo with no numbered structure at all.
+It just talks about our office policy in prose form, paragraph after
+paragraph, with no Article, Section, or Clause markers anywhere in it.

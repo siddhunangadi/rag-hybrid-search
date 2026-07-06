@@ -50,3 +50,21 @@ def test_empty_document_returns_no_chunks():
     chunker = ClauseChunker(document_title="Empty")
     chunks = chunker.chunk(_doc("", document_id="doc-3"))
     assert chunks == []
+
+
+def test_document_level_metadata_stamped_on_every_clause_alongside_clause_level_fields():
+    chunker = ClauseChunker(
+        document_title="HIPAA",
+        regulation="HIPAA",
+        jurisdiction="US",
+        document_type="regulation",
+    )
+    chunks = chunker.chunk(_doc(_GDPR_TEXT, document_id="doc-hipaa"))
+    assert len(chunks) >= 2
+    for c in chunks:
+        assert c.legal_metadata.regulation == "HIPAA"
+        assert c.legal_metadata.jurisdiction == "US"
+        assert c.legal_metadata.document_type == "regulation"
+    articles = {c.legal_metadata.article for c in chunks}
+    assert "5" in articles
+    assert "17" in articles

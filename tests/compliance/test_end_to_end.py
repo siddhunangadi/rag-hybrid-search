@@ -27,7 +27,11 @@ Article 17
 """
 
 
-def _build_pipeline_components(tmp_dir: str):
+def _build_pipeline_components(
+    tmp_dir: str,
+    regulation: str | None = None,
+    jurisdiction: str | None = None,
+):
     chunk_store = SqliteChunkStore(db_path=f"{tmp_dir}/chunks.db")
     vector_store = ChromaVectorStore(data_dir=f"{tmp_dir}/chroma")
     bm25_index = BM25Index(index_path=f"{tmp_dir}/bm25.pkl")
@@ -35,7 +39,11 @@ def _build_pipeline_components(tmp_dir: str):
     embedding_provider = FakeEmbeddingProvider()
 
     document = Document(document_id="doc-gdpr", source_path="/tmp/gdpr.txt", content=_GDPR_TEXT, format="text")
-    chunker = ClauseChunker(document_title="GDPR Consolidated Text")
+    chunker = ClauseChunker(
+        document_title="GDPR Consolidated Text",
+        regulation=regulation,
+        jurisdiction=jurisdiction,
+    )
     chunks = chunker.chunk(document)
 
     embeddings = embedding_provider.embed([c.text for c in chunks])
@@ -82,6 +90,14 @@ def test_mixed_query_filters_to_matching_article():
         results, _trace = route_query("Explain Article 5", chunk_store, retriever)
         assert len(results) >= 1
         assert all(r.chunk.legal_metadata.article == "5" for r in results)
+
+
+def test_metadata_query_returns_chunks_scoped_to_regulation():
+    with tempfile.TemporaryDirectory() as tmp:
+        chunk_store, retriever = _build_pipeline_components(tmp, regulation="GDPR", jurisdiction="EU")
+        results, _trace = route_query("Show only GDPR documents", chunk_store, retriever)
+        assert len(results) >= 1
+        assert all(r.chunk.legal_metadata.regulation == "GDPR" for r in results)
 
 
 def test_citations_built_from_structured_query_results():

@@ -7,11 +7,13 @@ Handlers only translate HTTP <-> pipeline calls; business logic lives in
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 
 from api.dependencies import Container, get_container
 from api.schemas import (
     AnswerRequest,
+    DebugRetrievalResponse,
+    DebugRetrievedChunk,
     DocumentSummary,
     DocumentsResponse,
     DocumentTypeParam,
@@ -33,7 +35,9 @@ from rag_hybrid_search.ingestion.loaders.pdf import PdfLoader
 from rag_hybrid_search.ingestion.loaders.text import TextLoader
 from rag_hybrid_search.ingestion.loaders.xlsx_loader import XlsxLoader
 from rag_hybrid_search.models import IndexStatus
+from rag_pipeline.context_builder import build_context
 from rag_pipeline.models import RagAnswer
+from rag_pipeline.prompt_builder import build_prompt
 
 _PACKAGE_NAME = "rag-hybrid-search"
 _FALLBACK_VERSION = "0.1.0"
@@ -136,6 +140,59 @@ async def answer(request: AnswerRequest, container: Container = Depends(get_cont
         )
     except Exception as e:  # noqa: BLE001 - convert unexpected errors to a clean 500 body
         raise HTTPException(status_code=500, detail=f"unexpected error answering question: {e}") from e
+
+
+@router.get("/debug/retrieval", response_model=DebugRetrievalResponse)
+async def debug_retrieval(
+    query: str,
+    container: Container = Depends(get_container),
+    x_debug_token: str = Header(default=None),
+) -> DebugRetrievalResponse:
+    """Trace every retrieval stage for a query against already-indexed data.
+
+    Disabled unless ``settings.debug_token`` is set (returns 404, so its
+    existence isn't disclosed) -- it exposes raw indexed chunk text and full
+    prompts, which is sensitive for compliance-style documents. Enable by
+    setting ``RAG_DEBUG_TOKEN`` and passing the same value as the
+    ``X-Debug-Token`` header.
+    """
+    if not container.settings.debug_token:
+        raise HTTPException(status_code=404, detail="not found")
+    if x_debug_token != container.settings.debug_token:
+        raise HTTPException(status_code=403, detail="invalid or missing X-Debug-Token")
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="query must not be blank")
+
+    pipeline = container.rag_pipeline
+    retriever = pipeline.retriever
+
+    dense_results = retriever.dense_retriever.search(query, k=retriever.dense_k)
+    bm25_results = retriever.sparse_retriever.search(query, k=retriever.sparse_k)
+    reranked, _trace = retriever.retrieve(query)
+
+    context = build_context(sorted(reranked, key=lambda r: r.final_rank)[:5])
+    prompt = build_prompt(query, context, prompt_version=pipeline.prompt_version)
+    raw_generation = pipeline.generation_provider.generate(prompt)
+
+    def _to_debug_chunks(results, score_attr: str) -> list[DebugRetrievedChunk]:
+        ranked = sorted(results, key=lambda r: getattr(r, score_attr) or 0.0, reverse=True)
+        return [
+            DebugRetrievedChunk(
+                chunk_id=r.chunk.chunk_id,
+                chunk_index=r.chunk.chunk_index,
+                score=getattr(r, score_attr),
+                text=r.chunk.text,
+            )
+            for r in ranked
+        ]
+
+    return DebugRetrievalResponse(
+        dense_results=_to_debug_chunks(dense_results, "dense_score"),
+        bm25_results=_to_debug_chunks(bm25_results, "bm25_score"),
+        rrf_results=_to_debug_chunks(reranked, "rrf_score"),
+        prompt=prompt,
+        raw_generation=raw_generation,
+    )
 
 
 @router.post("/index", response_model=IndexResponse)

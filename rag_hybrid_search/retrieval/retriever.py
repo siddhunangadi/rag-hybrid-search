@@ -30,6 +30,22 @@ class HybridRetriever:
         self._sparse_k = sparse_k
         self._rerank_top_n = rerank_top_n
 
+    @property
+    def dense_retriever(self) -> DenseRetriever:
+        return self._dense_retriever
+
+    @property
+    def sparse_retriever(self) -> SparseRetriever:
+        return self._sparse_retriever
+
+    @property
+    def dense_k(self) -> int:
+        return self._dense_k
+
+    @property
+    def sparse_k(self) -> int:
+        return self._sparse_k
+
     def retrieve(self, query: str) -> tuple[list[RetrievedChunk], RetrievalTrace]:
         trace = RetrievalTrace()
 

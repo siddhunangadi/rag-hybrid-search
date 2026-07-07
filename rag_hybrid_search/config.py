@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     nvidia_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
 
+    # Gates GET /debug/retrieval, which exposes raw indexed chunk text and
+    # full prompts. Unset (default) -> endpoint returns 404. Set this to a
+    # random secret and pass it as the X-Debug-Token header to enable it.
+    debug_token: Optional[str] = None
+
     chunking_strategy: Literal["fixed", "recursive", "semantic"] = "recursive"
     chunk_size: int = 500
     chunk_overlap: int = 50

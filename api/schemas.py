@@ -81,3 +81,27 @@ class VersionResponse(BaseModel):
 
     name: str
     version: str
+
+
+class DebugRetrievedChunk(BaseModel):
+    """One retrieved chunk with its stage-specific score, for GET /debug/retrieval."""
+
+    chunk_id: str
+    chunk_index: int
+    score: Optional[float] = None
+    text: str
+
+
+class DebugRetrievalResponse(BaseModel):
+    """Response body for GET /debug/retrieval.
+
+    Traces every pipeline stage for one query against already-indexed data,
+    so retrieval-quality bugs can be localized to a specific stage without
+    re-indexing or guessing from the final answer alone.
+    """
+
+    dense_results: list[DebugRetrievedChunk]
+    bm25_results: list[DebugRetrievedChunk]
+    rrf_results: list[DebugRetrievedChunk]
+    prompt: str
+    raw_generation: str

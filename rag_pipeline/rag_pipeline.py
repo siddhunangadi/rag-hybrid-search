@@ -33,6 +33,18 @@ class RagPipeline:
         self._chunk_store = chunk_store
         self._prompt_version = prompt_version
 
+    @property
+    def retriever(self):
+        return self._retriever
+
+    @property
+    def generation_provider(self) -> GenerationProvider:
+        return self._generation_provider
+
+    @property
+    def prompt_version(self) -> str:
+        return self._prompt_version
+
     def answer(self, question: str, max_chunks: int = 5, verify: bool = True) -> RagAnswer:
         if self._chunk_store is not None:
             retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever)

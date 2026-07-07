@@ -9,8 +9,10 @@ Rules:
 - If the CONTEXT does not support an answer, say you don't know.
 - "supporting_quote" MUST be copied verbatim, character-for-character, from
   the CONTEXT -- same words, same punctuation, same capitalization. Do NOT
-  paraphrase or summarize it. If no exact quote in the CONTEXT supports a
-  claim, drop that claim (or answer "I don't know" if no claim can be made).
+  paraphrase or summarize it. If you cannot copy an exact supporting_quote
+  verbatim from the CONTEXT, do not emit that claim. Never fabricate or
+  paraphrase supporting_quote. (Answer "I don't know" if no claim can be
+  made at all.)
 - Respond ONLY with JSON matching this shape, no prose wrapper, no markdown fences:
   {"answer": "...", "claims": [{"text": "...", "citation_ids": ["d1"], "supporting_quote": "..."}]}
 

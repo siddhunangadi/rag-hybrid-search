@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -76,12 +77,21 @@ class RagPipeline:
             )
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
-        structured_citations = build_citations(retrieved_chunks)
+        structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
 
         return RagAnswer(
             answer=draft.answer, citations=citations, structured_citations=structured_citations,
             confidence=confidence, verification=verification, error=parse_error,
         )
+
+    def _filename_by_doc_id(self) -> dict[str, str]:
+        if self._chunk_store is None:
+            return {}
+        return {
+            s["document_id"]: Path(s["source_path"]).name
+            for s in self._chunk_store.get_document_summaries()
+            if s["source_path"]
+        }
 
     def _parse_draft(self, raw_output: str) -> tuple[RagAnswerDraft, str | None]:
         metadata = GenerationMetadata(

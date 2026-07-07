@@ -3,11 +3,12 @@ from rag_hybrid_search.models import RetrievedChunk
 from rag_hybrid_search.uuid7 import uuid7
 
 
-def _render_display(retrieved: RetrievedChunk) -> str:
+def _render_display(retrieved: RetrievedChunk, title: str) -> str:
     lm = retrieved.chunk.legal_metadata
     if lm is None or (lm.regulation is None and lm.article is None):
-        page_part = f", chunk {retrieved.chunk.chunk_index}"
-        return f"{retrieved.chunk.document_id}{page_part}"
+        page = retrieved.chunk.page
+        page_part = f", p.{page}" if page else ""
+        return f"{title}{page_part}, chunk {retrieved.chunk.chunk_index}"
 
     parts = []
     if lm.regulation:
@@ -32,23 +33,29 @@ def _render_display(retrieved: RetrievedChunk) -> str:
     return display
 
 
-def build_citations(retrieved_chunks: list[RetrievedChunk]) -> list[Citation]:
+def build_citations(
+    retrieved_chunks: list[RetrievedChunk],
+    filename_by_doc_id: dict[str, str] | None = None,
+) -> list[Citation]:
     """Build structured Citation objects from post-rerank retrieved chunks.
 
     Non-legal chunks (legal_metadata is None) degrade gracefully to a
-    document_id/chunk_index based display string instead of failing.
+    filename/chunk_index based display string (falling back to document_id
+    if the filename isn't known) instead of failing.
     """
+    filename_by_doc_id = filename_by_doc_id or {}
     citations = []
     for retrieved in retrieved_chunks:
         lm = retrieved.chunk.legal_metadata
+        title = filename_by_doc_id.get(retrieved.chunk.document_id, retrieved.chunk.document_id)
         citations.append(
             Citation(
                 citation_id=uuid7(),
                 document_id=retrieved.chunk.document_id,
-                document_title=lm.document_title if lm else retrieved.chunk.document_id,
+                document_title=lm.document_title if lm else title,
                 chunk_id=retrieved.chunk.chunk_id,
                 confidence=retrieved.rerank_score or 0.0,
-                display=_render_display(retrieved),
+                display=_render_display(retrieved, title),
                 regulation=lm.regulation if lm else None,
                 version=lm.version if lm else None,
                 jurisdiction=lm.jurisdiction if lm else None,

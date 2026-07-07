@@ -28,8 +28,14 @@ def _retrieval_score(retrieved_chunks: list[RetrievedChunk]) -> float:
     if not retrieved_chunks:
         return 0.0
     top = min(retrieved_chunks, key=lambda r: r.final_rank)
-    score = top.rerank_score if top.rerank_score is not None else top.rrf_score
-    return max(0.0, min(1.0, score))
+    if top.rerank_score is not None:
+        return max(0.0, min(1.0, top.rerank_score))
+    # rrf_score is an unbounded raw RRF value (max ~1/(rrf_k+1)), not a 0-1
+    # confidence -- using it directly understates confidence by orders of
+    # magnitude whenever no scored reranker ran (e.g. PassthroughReranker,
+    # the default on memory-constrained deployments). Fall back to a
+    # rank-based score instead, always in (0, 1].
+    return 1.0 / top.final_rank if top.final_rank > 0 else 0.0
 
 
 def _citation_score(verification: VerificationReport) -> float:

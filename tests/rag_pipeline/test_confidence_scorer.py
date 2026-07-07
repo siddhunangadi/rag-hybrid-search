@@ -88,6 +88,20 @@ def test_overall_is_weighted_combination():
     assert scores.overall == 0.4 * 1.0 + 0.4 * 1.0 + 0.2 * 1.0
 
 
+def test_retrieval_score_falls_back_to_rank_when_no_rerank_score():
+    # PassthroughReranker never sets rerank_score, so a raw rrf_score
+    # (max ~1/(rrf_k+1), e.g. ~0.011) must not be used directly as a 0-1
+    # confidence -- it should fall back to a rank-based score instead.
+    chunks = [make_retrieved_chunk("c1", rerank_score=None, final_rank=1)]
+    context = PromptContext(text="[d1]\ntext", doc_id_map={"d1": "c1"})
+    report = VerificationReport(
+        total_claims=0, verified_claims=0, failed_claims=0,
+        hallucinated_doc_ids=[], missing_quotes=[], claim_results=[],
+    )
+    scores = score_confidence(chunks, report, context)
+    assert scores.retrieval == 1.0
+
+
 def test_empty_retrieved_chunks_gives_zero_retrieval_score():
     context = PromptContext(text="", doc_id_map={})
     report = VerificationReport(

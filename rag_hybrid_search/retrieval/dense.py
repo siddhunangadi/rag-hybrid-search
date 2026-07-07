@@ -15,7 +15,7 @@ class DenseRetriever:
         self._chunk_store = chunk_store
 
     def search(self, query: str, k: int) -> list[RetrievedChunk]:
-        query_embedding = self._embedding_provider.embed([query])[0]
+        query_embedding = self._embedding_provider.embed([query], input_type="query")[0]
         raw_results = self._vector_store.query(query_embedding, k)
 
         results = []

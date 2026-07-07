@@ -5,7 +5,13 @@ from rag_hybrid_search.models import RetrievedChunk
 
 class EmbeddingProvider(ABC):
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], input_type: str = "passage") -> list[list[float]]:
+        """Embed texts. ``input_type`` distinguishes query vs. passage embedding
+
+        for asymmetric models (e.g. NVIDIA's e5-v5 QA embedder), where a query
+        embedded as a passage lands in the wrong vector space and degrades
+        dense retrieval quality.
+        """
         ...
 
     @property

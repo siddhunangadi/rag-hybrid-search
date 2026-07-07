@@ -13,7 +13,7 @@ class FakeEmbeddingProvider(EmbeddingProvider):
 
     _DIM = 8
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], input_type: str = "passage") -> list[list[float]]:
         return [self._embed_one(text) for text in texts]
 
     def _embed_one(self, text: str) -> list[float]:

@@ -25,13 +25,13 @@ class NvidiaProvider(EmbeddingProvider, GenerationProvider):
             headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout
         )
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], input_type: str = "passage") -> list[list[float]]:
         response = self._client.post(
             f"{_BASE_URL}/embeddings",
             json={
                 "input": texts,
                 "model": self._embedding_model,
-                "input_type": "passage",
+                "input_type": input_type,
             },
         )
         response.raise_for_status()

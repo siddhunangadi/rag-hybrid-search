@@ -7,6 +7,12 @@ const Ui = (() => {
     return document.getElementById(id);
   }
 
+  function confidenceLabel(score) {
+    if (score >= 0.66) return "High";
+    if (score >= 0.33) return "Medium";
+    return "Low";
+  }
+
   function setStatus(dotId, textId, state, text) {
     const dot = el(dotId);
     dot.classList.remove("status-dot--ok", "status-dot--error", "status-dot--pending");
@@ -123,7 +129,20 @@ const Ui = (() => {
       textEl.textContent = result.answer;
 
       citationsEl.innerHTML = "";
-      if (result.citations && result.citations.length > 0) {
+      const structured = result.structured_citations || [];
+      if (structured.length > 0) {
+        citationsEl.hidden = false;
+        for (const citation of structured) {
+          const chip = document.createElement("span");
+          chip.className = "citation-chip";
+          chip.textContent = citation.page
+            ? `${citation.document_title} · p.${citation.page}`
+            : citation.document_title;
+          chip.title = citation.display;
+          citationsEl.appendChild(chip);
+        }
+      } else if (result.citations && result.citations.length > 0) {
+        // Fallback for older responses without structured_citations.
         citationsEl.hidden = false;
         for (const citation of result.citations) {
           const chip = document.createElement("span");
@@ -138,7 +157,7 @@ const Ui = (() => {
 
     const c = result.confidence;
     el("metric-overall").textContent = c.overall.toFixed(2);
-    el("metric-retrieval").textContent = c.retrieval.toFixed(2);
+    el("metric-retrieval").textContent = `${c.retrieval.toFixed(2)} (${confidenceLabel(c.retrieval)})`;
     el("metric-citations").textContent = c.citations.toFixed(2);
     el("metric-coverage").textContent = c.coverage.toFixed(2);
 

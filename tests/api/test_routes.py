@@ -214,3 +214,33 @@ def test_answer_show_article_returns_only_matching_article_via_structured_citati
     structured_citations = body["structured_citations"]
     assert len(structured_citations) >= 1
     assert all(c["article"] == "17" for c in structured_citations)
+
+
+def test_debug_retrieval_exposes_fusion_and_rerank_as_separate_stages(monkeypatch, tmp_path):
+    """The debug panel must let you see fusion order and rerank order
+    separately -- otherwise there's no way to prove reranking actually
+    changed anything versus silently passing candidates through."""
+    monkeypatch.delenv("RAG_NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_DEBUG_TOKEN", "test-token")
+    monkeypatch.setenv("RAG_DATA_DIR", str(tmp_path / "data"))
+    from api.main import create_app
+    app = create_app()
+    with TestClient(app) as debug_client:
+        debug_client.post(
+            "/index",
+            json={"documents": [{"filename": "leave.txt", "content": "Employees get 20 days of paid annual leave per year."}]},
+        )
+
+        response = debug_client.get(
+            "/debug/retrieval",
+            params={"query": "How many days of leave?"},
+            headers={"X-Debug-Token": "test-token"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "rrf_results" in body
+        assert "rerank_results" in body
+        assert len(body["rrf_results"]) > 0
+        assert len(body["rerank_results"]) > 0

@@ -126,5 +126,6 @@ class DebugRetrievalResponse(BaseModel):
     dense_results: list[DebugRetrievedChunk]
     bm25_results: list[DebugRetrievedChunk]
     rrf_results: list[DebugRetrievedChunk]
+    rerank_results: list[DebugRetrievedChunk]
     prompt: str
     raw_generation: str

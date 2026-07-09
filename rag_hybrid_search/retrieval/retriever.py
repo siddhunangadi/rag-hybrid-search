@@ -46,6 +46,18 @@ class HybridRetriever:
     def sparse_k(self) -> int:
         return self._sparse_k
 
+    @property
+    def dense_weight(self) -> float:
+        return self._dense_weight
+
+    @property
+    def sparse_weight(self) -> float:
+        return self._sparse_weight
+
+    @property
+    def rrf_k(self) -> int:
+        return self._rrf_k
+
     def retrieve(self, query: str) -> tuple[list[RetrievedChunk], RetrievalTrace]:
         trace = RetrievalTrace()
 

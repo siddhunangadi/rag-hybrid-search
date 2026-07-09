@@ -40,6 +40,7 @@ from rag_hybrid_search.ingestion.loaders.pdf import PdfLoader
 from rag_hybrid_search.ingestion.loaders.text import TextLoader
 from rag_hybrid_search.ingestion.loaders.xlsx_loader import XlsxLoader
 from rag_hybrid_search.models import IndexStatus
+from rag_hybrid_search.retrieval.fusion import weighted_rrf
 from rag_pipeline.context_builder import build_context
 from rag_pipeline.models import RagAnswer
 from rag_pipeline.prompt_builder import build_prompt
@@ -214,6 +215,13 @@ async def debug_retrieval(
 
     dense_results = retriever.dense_retriever.search(query, k=retriever.dense_k)
     bm25_results = retriever.sparse_retriever.search(query, k=retriever.sparse_k)
+    # Fuse explicitly (pre-rerank) so the debug panel can show reranking's
+    # actual before/after effect, not just the final post-rerank order.
+    fused = weighted_rrf(
+        dense_results, bm25_results,
+        dense_weight=retriever.dense_weight, sparse_weight=retriever.sparse_weight,
+        k=retriever.rrf_k,
+    )
     reranked, _trace = retriever.retrieve(query)
 
     context = build_context(sorted(reranked, key=lambda r: r.final_rank)[:5])
@@ -235,7 +243,8 @@ async def debug_retrieval(
     return DebugRetrievalResponse(
         dense_results=_to_debug_chunks(dense_results, "dense_score"),
         bm25_results=_to_debug_chunks(bm25_results, "bm25_score"),
-        rrf_results=_to_debug_chunks(reranked, "rrf_score"),
+        rrf_results=_to_debug_chunks(fused, "rrf_score"),
+        rerank_results=_to_debug_chunks(reranked, "rerank_score"),
         prompt=prompt,
         raw_generation=raw_generation,
     )

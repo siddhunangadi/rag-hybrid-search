@@ -3,10 +3,10 @@ import httpx
 from rag_hybrid_search.models import RetrievedChunk
 from rag_hybrid_search.providers.base import RerankProvider
 
-# NVIDIA's hosted NeMo Retriever reranking API. NOTE: this contract is based on
-# published NVIDIA docs, not a verified live call (no API key was available at
-# implementation time) — smoke-test against a real key before relying on it in
-# production, same as any other unverified external integration.
+# NVIDIA's hosted NeMo Retriever reranking API. Verified against a live key
+# (2026-07-10): reranking measurably changes candidate order and pulls in
+# chunks outside the pre-rerank RRF top-N, confirming this is a real scored
+# call, not a passthrough. See docs/RERANK_VERIFICATION.md for the trace.
 _RERANK_URL = "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking"
 
 

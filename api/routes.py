@@ -4,16 +4,19 @@ Handlers only translate HTTP <-> pipeline calls; business logic lives in
 ``rag_pipeline`` and ``rag_hybrid_search``.
 """
 
+import json
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from api.dependencies import Container, get_container
 from api.schemas import (
     AnswerRequest,
     DebugRetrievalResponse,
     DebugRetrievedChunk,
+    DeleteDocumentResponse,
     DocumentSummary,
     DocumentsResponse,
     DocumentTypeParam,
@@ -22,6 +25,8 @@ from api.schemas import (
     IndexRequest,
     IndexResponse,
     IndexResult,
+    JobStatusResponse,
+    UploadAcceptedResponse,
     VersionResponse,
 )
 from rag_hybrid_search.compliance.clause_chunker import ClauseChunker
@@ -98,15 +103,17 @@ def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
         return IndexResult(filename=document.filename, status="failed", error=str(e))
 
 
-async def _ingest_upload(
-    file: UploadFile, container: Container, document_type: DocumentTypeParam = "general"
+def _ingest_bytes(
+    filename: str, contents: bytes, document_type: DocumentTypeParam, container: Container
 ) -> IndexResult:
-    """Write an uploaded file's raw bytes to disk and ingest it, catching per-item errors."""
-    filename = file.filename or "upload"
+    """Write raw file bytes to disk and ingest them, catching per-item errors.
+
+    Synchronous by design so it can run either inline (blocking /upload) or
+    on the background ingestion worker thread (see api/jobs.py, /upload/async).
+    """
     try:
         loader = _loader_for_filename(filename)
         dest_path = container.uploads_dir / filename
-        contents = await file.read()
         dest_path.write_bytes(contents)
 
         chunker = _chunker_for_document_type(document_type, filename)
@@ -118,6 +125,15 @@ async def _ingest_upload(
         )
     except Exception as e:  # noqa: BLE001 - deliberately isolate per-file failures
         return IndexResult(filename=filename, status="failed", error=str(e))
+
+
+async def _ingest_upload(
+    file: UploadFile, container: Container, document_type: DocumentTypeParam = "general"
+) -> IndexResult:
+    """Read an uploaded file's raw bytes and ingest it inline (blocks until done)."""
+    filename = file.filename or "upload"
+    contents = await file.read()
+    return _ingest_bytes(filename, contents, document_type, container)
 
 
 @router.post("/answer", response_model=RagAnswer)
@@ -140,6 +156,36 @@ async def answer(request: AnswerRequest, container: Container = Depends(get_cont
         )
     except Exception as e:  # noqa: BLE001 - convert unexpected errors to a clean 500 body
         raise HTTPException(status_code=500, detail=f"unexpected error answering question: {e}") from e
+
+
+@router.post("/answer/stream")
+async def answer_stream(
+    request: AnswerRequest, container: Container = Depends(get_container)
+) -> StreamingResponse:
+    """Stream an answer as Server-Sent Events instead of blocking until generation finishes.
+
+    Emits ``event: delta`` frames with raw text as the LLM produces it, then
+    one ``event: final`` frame with the full verified ``RagAnswer`` JSON once
+    citation verification/confidence scoring (which need the complete text)
+    finish. Kept synchronous internally for the same single-thread sqlite
+    reason as ``/answer``; the generator only yields, it doesn't block the
+    event loop between yields since each ``next()`` is driven by Starlette's
+    response iteration.
+    """
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be blank")
+
+    def event_stream():
+        for event_type, payload in container.rag_pipeline.answer_stream(
+            request.question, max_chunks=request.max_chunks, verify=request.verify
+        ):
+            if event_type == "delta":
+                data = json.dumps({"text": payload})
+            else:
+                data = payload.model_dump_json()
+            yield f"event: {event_type}\ndata: {data}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/debug/retrieval", response_model=DebugRetrievalResponse)
@@ -228,6 +274,43 @@ async def upload_documents(
     return IndexResponse(results=results)
 
 
+@router.post("/upload/async", response_model=UploadAcceptedResponse, status_code=202)
+async def upload_documents_async(
+    files: list[UploadFile] = File(...),
+    document_type: DocumentTypeParam = Form(default="general"),
+    container: Container = Depends(get_container),
+) -> UploadAcceptedResponse:
+    """Accept file uploads without blocking on ingestion; poll GET /jobs/{job_id} for the result.
+
+    File bytes are read here (on the request thread, before responding) since
+    ``UploadFile`` isn't safe to hand across threads; parsing, chunking,
+    embedding, and indexing then run on the background ingestion worker so a
+    large or slow upload can't tie up the request thread or time out the
+    client (see api/jobs.py -- JobStore serializes ingestion on one worker
+    thread to avoid racing the shared BM25 rebuild).
+    """
+    payloads = [((file.filename or "upload"), await file.read()) for file in files]
+
+    def work() -> dict:
+        results = [
+            _ingest_bytes(filename, contents, document_type, container)
+            for filename, contents in payloads
+        ]
+        return IndexResponse(results=results).model_dump()
+
+    job_id = container.job_store.submit(work)
+    return UploadAcceptedResponse(job_id=job_id)
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job(job_id: str, container: Container = Depends(get_container)) -> JobStatusResponse:
+    """Poll the status of a background ingestion job started via POST /upload/async."""
+    job = container.job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
+    return JobStatusResponse(job_id=job.job_id, status=job.state, result=job.result, error=job.error)
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health(container: Container = Depends(get_container)) -> HealthResponse:
     """Report which providers were selected and where data is being persisted."""
@@ -256,6 +339,23 @@ async def list_documents(container: Container = Depends(get_container)) -> Docum
         total_chunks=sum(d.chunk_count for d in documents),
         documents=documents,
     )
+
+
+@router.delete("/documents/{document_id}", response_model=DeleteDocumentResponse)
+async def delete_document(
+    document_id: str, container: Container = Depends(get_container)
+) -> DeleteDocumentResponse:
+    """Purge a document from the chunk store, vector store, and BM25 index together.
+
+    Uses ``IndexManager.remove_document``, which rebuilds the BM25 index
+    after deleting so the sparse index never drifts out of sync with the
+    chunk store.
+    """
+    chunks = container.chunk_store.get_by_document(document_id)
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
+    container.index_manager.remove_document(document_id)
+    return DeleteDocumentResponse(document_id=document_id, chunks_deleted=len(chunks))
 
 
 @router.get("/version", response_model=VersionResponse)

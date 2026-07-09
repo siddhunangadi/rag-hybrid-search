@@ -40,6 +40,7 @@ from pathlib import Path
 
 from fastapi import Request
 
+from api.jobs import JobStore
 from rag_hybrid_search.config import Settings
 from rag_hybrid_search.ingestion.chunkers.base import Chunker
 from rag_hybrid_search.ingestion.chunkers.recursive import RecursiveChunker
@@ -81,6 +82,7 @@ class Container:
     chunker: Chunker
     rag_pipeline: RagPipeline
     uploads_dir: Path
+    job_store: JobStore
 
     def build_ingestion_pipeline(self, loader: Loader, chunker: Chunker | None = None) -> IngestionPipeline:
         """Build an ``IngestionPipeline`` for a specific loader, reusing shared singletons.
@@ -193,6 +195,7 @@ def build_container(settings: Settings | None = None) -> Container:
         chunker=chunker,
         rag_pipeline=rag_pipeline,
         uploads_dir=uploads_dir,
+        job_store=JobStore(),
     )
 
 

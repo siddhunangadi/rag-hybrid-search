@@ -84,6 +84,65 @@ class RagPipeline:
             confidence=confidence, verification=verification, error=parse_error,
         )
 
+    def answer_stream(self, question: str, max_chunks: int = 5, verify: bool = True):
+        """Stream the raw generation as text deltas, then yield the final verified RagAnswer.
+
+        Citation verification and confidence scoring need the complete
+        generation text (they check whether each claim's supporting_quote
+        appears verbatim in the retrieved context), so they can't run
+        incrementally -- streaming here only removes the "frozen spinner"
+        wait for the LLM call itself. Yields ``("delta", str)`` tuples while
+        text arrives, then exactly one ``("final", RagAnswer)`` tuple once
+        parsing/verification/confidence scoring complete.
+        """
+        if self._chunk_store is not None:
+            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever)
+        else:
+            retrieved_chunks, _trace = self._retriever.retrieve(question)
+        retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
+
+        context = build_context(retrieved_chunks)
+        prompt = build_prompt(question, context, prompt_version=self._prompt_version)
+
+        chunks: list[str] = []
+        try:
+            for delta in self._generation_provider.generate_stream(prompt):
+                chunks.append(delta)
+                yield ("delta", delta)
+        except Exception as e:
+            yield (
+                "final",
+                RagAnswer(
+                    answer=None, citations=[], confidence=_ZERO_CONFIDENCE,
+                    verification=_EMPTY_VERIFICATION, error=str(e),
+                ),
+            )
+            return
+
+        raw_output = "".join(chunks)
+        draft, parse_error = self._parse_draft(raw_output)
+
+        if verify:
+            verification = verify_citations(draft, context)
+            confidence = score_confidence(retrieved_chunks, verification, context)
+        else:
+            verification = _EMPTY_VERIFICATION
+            confidence = ConfidenceScores(
+                retrieval=score_confidence(retrieved_chunks, _EMPTY_VERIFICATION, context).retrieval,
+                citations=0.0, coverage=0.0, overall=0.0,
+            )
+
+        citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
+        structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
+
+        yield (
+            "final",
+            RagAnswer(
+                answer=draft.answer, citations=citations, structured_citations=structured_citations,
+                confidence=confidence, verification=verification, error=parse_error,
+            ),
+        )
+
     def _filename_by_doc_id(self) -> dict[str, str]:
         if self._chunk_store is None:
             return {}

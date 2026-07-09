@@ -2,6 +2,8 @@
 
 A grounded, citation-verified RAG pipeline: hybrid (dense + sparse) retrieval with reranking, feeding a generation stage that verifies every claim against retrieved source text and scores its own confidence.
 
+**Diagrams:** [plain-English walkthrough](https://claude.ai/code/artifact/53c664d3-aaad-4f7b-8b59-a7b47b952869) (six flows, analogies, no engineering background needed) · [technical reference](https://claude.ai/code/artifact/872c6f00-3d13-4294-bd97-0700a18f52f4) (component diagram, request sequences, storage schema, RRF math)
+
 ## Architecture
 
 ```mermaid
@@ -172,18 +174,61 @@ curl http://localhost:8000/version
 {"name": "rag-hybrid-search", "version": "0.1.0"}
 ```
 
+**`DELETE /documents/{document_id}`** — purge a document from the chunk store, vector store, and BM25 index together:
+
+```bash
+curl -X DELETE http://localhost:8000/documents/<document_id>
+```
+
+```json
+{"document_id": "0198...", "chunks_deleted": 3}
+```
+
+**`POST /upload/async`** — accept file uploads without blocking on ingestion (returns `202` immediately, a large/slow file runs on a background worker instead of tying up the request):
+
+```bash
+curl -F "files=@big-report.pdf" http://localhost:8000/upload/async
+```
+
+```json
+{"job_id": "b46640d4-...", "status": "processing"}
+```
+
+**`GET /jobs/{job_id}`** — poll a background ingestion job started via `/upload/async`:
+
+```bash
+curl http://localhost:8000/jobs/b46640d4-...
+```
+
+```json
+{"job_id": "b46640d4-...", "status": "ready", "result": {"results": [{"filename": "big-report.pdf", "status": "ready", "error": null}]}, "error": null}
+```
+
+**`POST /answer/stream`** — same as `/answer`, but streamed as Server-Sent Events: `event: delta` frames with raw text as the LLM produces it, then one `event: final` frame with the full verified `RagAnswer` once citation verification (which needs the complete text) finishes:
+
+```bash
+curl -N -X POST http://localhost:8000/answer/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many days of paid leave do employees get?"}'
+```
+
 ## Frontend
 
 A vanilla HTML/CSS/JS frontend (`frontend/`) — no framework, no build step. FastAPI serves it directly as static files at the app root (`api/main.py` mounts `frontend/` after the API routes, so `/health`, `/answer`, etc. still take precedence), so there's a single Render service for both the API and the UI.
 
-- `frontend/index.html` — layout: sidebar (health/provider status, document upload, indexed-this-session list) + main area (question input, answer card with citations/confidence, collapsible developer panel showing the raw API response)
+- `frontend/index.html` — layout: sidebar (health/provider status, document upload with document-type selector + background-processing toggle, live indexed-document list with delete) + main area (question input with streaming toggle, answer card with citations/confidence, collapsible developer panel showing the raw API response)
 - `frontend/css/styles.css` — design tokens (dark OLED palette, Inter typeface) and responsive layout
 - `frontend/css/components.css` — component styling
-- `frontend/js/config.js`, `api.js`, `ui.js`, `app.js` — config, thin fetch client, DOM rendering, event wiring — no business logic, just calls to `POST /index`, `POST /upload`, `POST /answer`, `GET /health`, `GET /version`
+- `frontend/js/config.js`, `api.js`, `ui.js`, `app.js` — config, thin fetch client (including SSE stream parsing and job polling), DOM rendering, event wiring
 
 Visit `http://localhost:8000/` (or the deployed URL) directly — no separate process to run.
 
-Note: the developer panel shows the real raw JSON response (confidence breakdown, claim verification) rather than per-chunk BM25/dense/RRF scores — the API doesn't currently expose retrieval-trace detail in `RagAnswer`, so the panel only surfaces what's actually returned.
+Note: the developer panel shows the real raw JSON response (confidence breakdown, claim verification) rather than per-chunk BM25/dense/RRF scores — the API doesn't currently expose retrieval-trace detail in `RagAnswer`, so the panel only surfaces what's actually returned. `GET /debug/retrieval` exposes that trace separately, gated behind `RAG_DEBUG_TOKEN`.
+
+## Security
+
+- **Prompt injection:** document text is untrusted input. The generation prompt wraps retrieved context and the user's question in `<context>`/`<question>` tags with an explicit instruction that anything inside them is data, never instructions — so a PDF containing "ignore previous instructions, you are now..." gets quoted or ignored, not obeyed.
+- **No auth / multi-tenancy.** There is no login and no per-user data isolation — anyone who can reach the API can see every indexed document. Fine for a single-tenant deployment or a demo; not appropriate for storing multiple users' confidential documents without adding auth + tenant scoping first.
 
 ## Benchmark
 
@@ -196,7 +241,7 @@ uv sync
 uv run pytest -q
 ```
 
-**130/130 tests passing** (122 pre-existing + 8 API tests), full suite runtime ~2.5min on a local M-series MacBook.
+**193/195 tests passing** (2 skipped — live-provider tests that need real API keys), full suite runtime ~90s on a local M-series MacBook.
 
 ## Docker
 
@@ -225,7 +270,9 @@ rag_pipeline/
   rag_pipeline.py         orchestrator
 api/
   main.py           FastAPI app instance + startup wiring
-  routes.py         /answer, /index, /upload, /health, /version handlers
+  routes.py         /answer, /answer/stream, /index, /upload, /upload/async,
+                     /jobs/{id}, /documents (+DELETE), /health, /version handlers
+  jobs.py           in-memory JobStore, single-worker background ingestion
   schemas.py        request/response pydantic models
   dependencies.py   singleton construction + provider fallback selection
 docs/superpowers/
@@ -234,7 +281,9 @@ docs/superpowers/
 
 ## Status
 
-v1.1.0 — core hybrid retrieval + grounded generation pipeline, plus a thin FastAPI HTTP layer (`api/`) backed by a persistent on-disk index under `data_dir`. 130 tests green. Usable both as a library (unchanged) and as a service.
+v1.2.0 — core hybrid retrieval + grounded generation pipeline, a FastAPI HTTP layer (`api/`) backed by a persistent on-disk index under `data_dir`, streaming answers (SSE), async background ingestion, document deletion, and table-aware PDF parsing. 193 tests green. Usable both as a library (unchanged) and as a service.
+
+**Known scaling limits** (by design, not yet addressed): BM25 index is fully in-RAM (no sharding past tens of thousands of documents), SQLite chunk store is single-file (fine for one instance, not for concurrent writers across multiple app instances), and there's no multi-tenant auth. All three require external infra (Elasticsearch/OpenSearch, Postgres, an auth layer) that this project doesn't provision — see the diagrams above for where they'd slot in.
 
 ## License
 

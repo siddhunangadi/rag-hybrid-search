@@ -177,6 +177,35 @@ textarea.field-textarea {
   border-radius: 50%;
 }
 
+.doc-item-delete {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--color-foreground-muted);
+  font-size: 13px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+}
+
+.doc-item-delete:hover {
+  color: var(--color-destructive);
+  background: var(--color-surface);
+}
+
+.job-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-foreground-muted);
+}
+
+.job-status--ready {
+  color: var(--color-accent);
+}
+
+.job-status--failed {
+  color: var(--color-destructive);
+}
+
 /* Question box */
 
 .question-card {

@@ -37,6 +37,20 @@ class IndexRequest(BaseModel):
     documents: list[IndexDocument] = Field(..., min_length=1, description="Documents to ingest.")
 
 
+class DeleteDocumentResponse(BaseModel):
+    """Response body for DELETE /documents/{document_id}."""
+
+    document_id: str
+    chunks_deleted: int
+
+
+class UploadAcceptedResponse(BaseModel):
+    """Response body for POST /upload/async: the upload was accepted, not yet processed."""
+
+    job_id: str
+    status: Literal["processing"] = "processing"
+
+
 class IndexResult(BaseModel):
     """Per-document ingestion outcome."""
 
@@ -49,6 +63,15 @@ class IndexResponse(BaseModel):
     """Response body for POST /index."""
 
     results: list[IndexResult]
+
+
+class JobStatusResponse(BaseModel):
+    """Response body for GET /jobs/{job_id}."""
+
+    job_id: str
+    status: Literal["processing", "ready", "failed"]
+    result: Optional[IndexResponse] = None
+    error: Optional[str] = None
 
 
 class DocumentSummary(BaseModel):

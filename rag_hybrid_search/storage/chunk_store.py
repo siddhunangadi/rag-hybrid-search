@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from typing import Iterator, Optional
 
 from rag_hybrid_search.compliance.regulation_models import LegalMetadata
@@ -54,11 +55,19 @@ _LEGAL_COLUMNS = [
 
 class SqliteChunkStore(ChunkStore):
     def __init__(self, db_path: str):
-        self._conn = sqlite3.connect(db_path)
+        # check_same_thread=False + _lock: the async ingestion path runs on a
+        # dedicated background worker thread (see api/jobs.py) while request
+        # handlers touch the same connection on the event-loop thread. sqlite3
+        # forbids cross-thread use of one connection unless this flag is set;
+        # the lock then serializes access since sqlite doesn't allow
+        # concurrent writes anyway.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._migrate_legal_columns()
-        self._conn.commit()
+        self._lock = threading.Lock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._migrate_legal_columns()
+            self._conn.commit()
 
     def _migrate_legal_columns(self) -> None:
         """Defensive migration: adds legal_* columns to a chunks table created
@@ -80,6 +89,10 @@ class SqliteChunkStore(ChunkStore):
         )
 
     def put(self, chunk: Chunk, source_path: Optional[str] = None) -> None:
+        with self._lock:
+            self._put(chunk, source_path)
+
+    def _put(self, chunk: Chunk, source_path: Optional[str] = None) -> None:
         lm = chunk.legal_metadata
         self._conn.execute(
             """
@@ -130,33 +143,38 @@ class SqliteChunkStore(ChunkStore):
         self._conn.commit()
 
     def get(self, chunk_id: str) -> Optional[Chunk]:
-        row = self._conn.execute(
-            "SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)
+            ).fetchone()
         return self._row_to_chunk(row) if row else None
 
     def get_by_document(self, document_id: str) -> list[Chunk]:
-        rows = self._conn.execute(
-            "SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index",
-            (document_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+                (document_id,),
+            ).fetchall()
         return [self._row_to_chunk(row) for row in rows]
 
     def get_document_hash(self, source_path: str) -> Optional[str]:
-        row = self._conn.execute(
-            "SELECT document_id FROM chunks WHERE source_path = ? LIMIT 1",
-            (source_path,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT document_id FROM chunks WHERE source_path = ? LIMIT 1",
+                (source_path,),
+            ).fetchone()
         return row["document_id"] if row else None
 
     def delete_by_document(self, document_id: str) -> None:
-        self._conn.execute(
-            "DELETE FROM chunks WHERE document_id = ?", (document_id,)
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM chunks WHERE document_id = ?", (document_id,)
+            )
+            self._conn.commit()
 
     def all(self) -> Iterator[Chunk]:
-        rows = self._conn.execute("SELECT * FROM chunks").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM chunks").fetchall()
         for row in rows:
             yield self._row_to_chunk(row)
 
@@ -174,21 +192,23 @@ class SqliteChunkStore(ChunkStore):
             clauses.append(f"{column} = ?")
             params.append(value)
         where = " AND ".join(clauses)
-        rows = self._conn.execute(
-            f"SELECT * FROM chunks WHERE {where} ORDER BY document_id, chunk_index", params
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM chunks WHERE {where} ORDER BY document_id, chunk_index", params
+            ).fetchall()
         return [self._row_to_chunk(row) for row in rows]
 
     def get_document_summaries(self) -> list[dict]:
         """Aggregate chunk counts per document, for corpus-wide stats endpoints."""
-        rows = self._conn.execute(
-            """
-            SELECT document_id, source_path, COUNT(*) as chunk_count
-            FROM chunks
-            GROUP BY document_id
-            ORDER BY document_id
-            """
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT document_id, source_path, COUNT(*) as chunk_count
+                FROM chunks
+                GROUP BY document_id
+                ORDER BY document_id
+                """
+            ).fetchall()
         return [
             {
                 "document_id": row["document_id"],

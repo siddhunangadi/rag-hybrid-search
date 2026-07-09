@@ -63,7 +63,8 @@ button:disabled {
 }
 
 input,
-textarea {
+textarea,
+select {
   font-family: inherit;
   font-size: 16px;
   color: var(--color-foreground);
@@ -75,6 +76,7 @@ textarea {
 
 input:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--color-ring);
   outline-offset: 2px;

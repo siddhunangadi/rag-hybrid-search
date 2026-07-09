@@ -30,6 +30,18 @@ class GenerationProvider(ABC):
     def generate(self, prompt: str, **kwargs) -> str:
         ...
 
+    def generate_stream(self, prompt: str, **kwargs):
+        """Yield the generation as text chunks, for latency-sensitive callers (SSE routes).
+
+        Default implementation has no real streaming: it just calls
+        ``generate`` and yields the whole result once. Providers with a
+        native streaming API (e.g. ``GeminiProvider``) should override this
+        for token-level incremental output; providers without one (e.g.
+        ``NvidiaProvider``) get correct-but-non-incremental behavior for
+        free instead of being required to implement streaming immediately.
+        """
+        yield self.generate(prompt, **kwargs)
+
 
 class RerankProvider(ABC):
     @abstractmethod

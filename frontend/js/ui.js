@@ -20,6 +20,41 @@ const Ui = (() => {
     el("data-dir").textContent = health.data_dir;
   }
 
+  function renderDocuments(documentsResponse) {
+    const list = el("doc-list");
+    list.innerHTML = "";
+    const documents = documentsResponse.documents || [];
+
+    if (documents.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "doc-list-empty";
+      empty.textContent = "No documents indexed yet.";
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const doc of documents) {
+      const item = document.createElement("li");
+      item.className = "doc-item";
+
+      const name = document.createElement("span");
+      name.className = "doc-item-name";
+      name.textContent = `${doc.filename} (${doc.chunk_count})`;
+      name.title = `${doc.filename} — ${doc.chunk_count} chunks — ${doc.document_id}`;
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "doc-item-delete";
+      removeBtn.setAttribute("aria-label", `Delete ${doc.filename}`);
+      removeBtn.textContent = "✕";
+      removeBtn.dataset.documentId = doc.document_id;
+
+      item.appendChild(name);
+      item.appendChild(removeBtn);
+      list.appendChild(item);
+    }
+  }
+
   function renderVersion(version) {
     el("api-version").textContent = `v${version.version}`;
   }
@@ -114,9 +149,36 @@ const Ui = (() => {
     el("answer-card").hidden = true;
   }
 
+  function beginStreamingAnswer() {
+    const card = el("answer-card");
+    card.hidden = false;
+    el("answer-error").hidden = true;
+    el("citation-list").hidden = true;
+    el("citation-list").innerHTML = "";
+    const textEl = el("answer-text");
+    textEl.hidden = false;
+    textEl.textContent = "";
+    for (const id of ["metric-overall", "metric-retrieval", "metric-citations", "metric-coverage"]) {
+      el(id).textContent = "–";
+    }
+    el("dev-panel-json").textContent = "";
+  }
+
+  function appendStreamingDelta(text) {
+    el("answer-text").textContent += text;
+  }
+
+  function setJobStatus(text, kind) {
+    const box = el("job-status");
+    box.hidden = !text;
+    box.textContent = text || "";
+    box.className = `job-status${kind ? ` job-status--${kind}` : ""}`;
+  }
+
   return {
     setStatus,
     renderProviders,
+    renderDocuments,
     renderVersion,
     addDocToList,
     toast,
@@ -124,5 +186,8 @@ const Ui = (() => {
     setIndexLoading,
     renderAnswer,
     hideAnswer,
+    beginStreamingAnswer,
+    appendStreamingDelta,
+    setJobStatus,
   };
 })();

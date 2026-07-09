@@ -6,3 +6,5 @@ data/
 .pytest_cache/
 .worktrees/
 .gstack/
+.claude/
+.DS_Store

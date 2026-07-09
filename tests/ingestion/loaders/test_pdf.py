@@ -21,3 +21,16 @@ def test_load_preserves_word_spacing_on_tight_kerning_pdf():
 
     assert "Musfiqur Rahman" in doc.content
     assert "MusfiqurRahman" not in doc.content
+
+
+def test_load_preserves_word_spacing_inside_extracted_tables():
+    """extract_tables() is a separate pdfplumber code path from
+    extract_text() with its own tolerance settings, so fixing word-spacing
+    for prose text doesn't fix it for table cells -- they need the same
+    tight-kerning tolerance fix applied independently."""
+    fixture_path = "tests/ingestion/loaders/fixtures/tight_kerning.pdf"
+
+    doc = PdfLoader().load(fixture_path)
+
+    assert "20,000 standalone functions" in doc.content
+    assert "20,000standalonefunctions" not in doc.content

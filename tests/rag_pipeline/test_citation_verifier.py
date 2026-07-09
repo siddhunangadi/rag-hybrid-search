@@ -116,6 +116,31 @@ def test_quote_matches_despite_mid_sentence_pdf_linewrap_in_chunk():
     assert report.claim_results[0].quote_match_score >= QUOTE_MATCH_THRESHOLD
 
 
+def test_quote_matches_when_chunk_text_contains_an_internal_blank_line():
+    """context_builder joins chunks with '\\n\\n', so _chunk_text_for_doc_id
+    finds a chunk's end by looking for the next '\\n\\n'. But table chunks
+    (rendered as 'prose\\n\\ntable rows') legitimately contain an internal
+    blank line too -- naively splitting on the first '\\n\\n' truncates the
+    chunk before the table rows the quote actually needs to match against."""
+    context = PromptContext(
+        text=(
+            "[d1]\nPublication date: December 2025.\n\n"
+            "Stage | Function-Level\n"
+            "2. Initial Sample | 20,000 standalone functions\n\n"
+            "[d2]\nEmployees get 20 days of paid annual leave per year."
+        ),
+        doc_id_map={"d1": "chunk-1", "d2": "chunk-2"},
+    )
+    claim = Claim(
+        text="Initial sample was 20,000 functions",
+        citation_ids=["d1"],
+        supporting_quote="2. Initial Sample | 20,000 standalone functions",
+    )
+    report = verify_citations(make_draft([claim]), context)
+    assert report.claim_results[0].passed is True
+    assert report.claim_results[0].quote_match_score >= QUOTE_MATCH_THRESHOLD
+
+
 def test_zero_claims_produces_empty_report():
     report = verify_citations(make_draft([]), _CONTEXT)
     assert report.total_claims == 0

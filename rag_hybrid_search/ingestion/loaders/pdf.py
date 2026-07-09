@@ -20,7 +20,7 @@ def _extract_with_pdfplumber(path: str) -> str | None:
         pages_text = []
         for page in pdf.pages:
             text = page.extract_text(x_tolerance=1) or ""
-            tables = page.extract_tables()
+            tables = page.extract_tables(table_settings={"text_x_tolerance": 1})
             table_blocks = [_table_to_text(table) for table in tables if table]
             pages_text.append("\n\n".join([text, *table_blocks]).strip())
         return "\n".join(pages_text)

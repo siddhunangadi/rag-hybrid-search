@@ -18,7 +18,13 @@ class Settings(BaseSettings):
 
     chunking_strategy: Literal["fixed", "recursive", "semantic"] = "recursive"
     chunk_size: int = 500
-    chunk_overlap: int = 50
+    # 150 (not the original 50): a sentence longer than the overlap window
+    # that straddles a chunk boundary gets truncated in both neighboring
+    # chunks, so its supporting_quote can never verify against either chunk
+    # alone even when the model's synthesis is accurate. A larger overlap
+    # doesn't eliminate this (a sentence longer than chunk_overlap can still
+    # split), but it substantially reduces how often it happens in practice.
+    chunk_overlap: int = 150
 
     dense_k: int = 10
     sparse_k: int = 10

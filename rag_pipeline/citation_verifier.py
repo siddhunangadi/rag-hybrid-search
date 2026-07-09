@@ -1,3 +1,4 @@
+import re
 from difflib import SequenceMatcher
 
 from rag_pipeline.models import (
@@ -32,6 +33,23 @@ def verify_citations(
                 chunk_text = _chunk_text_for_doc_id(context, citation_id)
                 score = _quote_containment_score(claim.supporting_quote, chunk_text)
                 best_quote_score = max(best_quote_score, score)
+
+        # The model occasionally copies a supporting_quote verbatim but
+        # tags it with the wrong doc id. Rather than fail a claim whose
+        # quote is genuinely present in the context, re-attribute it to
+        # whichever doc actually contains it.
+        if doc_ids_valid and best_quote_score < QUOTE_MATCH_THRESHOLD:
+            best_doc_id, best_doc_score = None, best_quote_score
+            for doc_id in context.doc_id_map:
+                if doc_id in claim.citation_ids:
+                    continue
+                chunk_text = _chunk_text_for_doc_id(context, doc_id)
+                score = _quote_containment_score(claim.supporting_quote, chunk_text)
+                if score > best_doc_score:
+                    best_doc_id, best_doc_score = doc_id, score
+            if best_doc_id is not None and best_doc_score >= QUOTE_MATCH_THRESHOLD:
+                claim.citation_ids = [best_doc_id]
+                best_quote_score = best_doc_score
 
         passed = doc_ids_valid and best_quote_score >= QUOTE_MATCH_THRESHOLD
         if doc_ids_valid and best_quote_score < QUOTE_MATCH_THRESHOLD:
@@ -69,9 +87,17 @@ def _quote_containment_score(quote: str, chunk_text: str) -> float:
     """
     if not quote:
         return 0.0
-    matcher = SequenceMatcher(None, quote, chunk_text)
-    match = matcher.find_longest_match(0, len(quote), 0, len(chunk_text))
-    return match.size / len(quote)
+    normalized_quote = _normalize_whitespace(quote)
+    normalized_chunk = _normalize_whitespace(chunk_text)
+    matcher = SequenceMatcher(None, normalized_quote, normalized_chunk)
+    match = matcher.find_longest_match(0, len(normalized_quote), 0, len(normalized_chunk))
+    return match.size / len(normalized_quote)
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse PDF line-wrap newlines/runs of whitespace to a single space
+    so verbatim quotes match chunk text regardless of source line breaks."""
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _chunk_text_for_doc_id(context: PromptContext, doc_id: str) -> str:

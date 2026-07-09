@@ -74,6 +74,31 @@ def test_generation_provider_exception_is_caught_not_raised():
     assert result.confidence.overall == 0.0
 
 
+def test_supporting_quote_with_unescaped_inner_quotes_is_repaired():
+    """The model is instructed to copy supporting_quote verbatim from the
+    source text. When that source text itself contains a quoted phrase
+    (e.g. the paper says the "GPT-3.5 trap"), the model sometimes copies
+    the inner quote marks literally without JSON-escaping them, producing
+    invalid JSON. This must be repaired rather than degrading the whole
+    answer to a raw-text fallback."""
+    chunks = [make_retrieved_chunk("c1", "some text")]
+    broken_json = (
+        '{"answer": "Explained by the "GPT-3.5 trap" [d1].", '
+        '"claims": [{"text": "GPT-3.5 detectability is an anomaly.", '
+        '"citation_ids": ["d1"], '
+        '"supporting_quote": "explains the "GPT-3.5 trap": detectors overfit."}]}'
+    )
+    pipeline = RagPipeline(
+        FakeRetriever(chunks), MockProvider(canned_json=broken_json)
+    )
+
+    result = pipeline.answer("question")
+
+    assert result.error is None
+    assert result.verification.total_claims == 1
+    assert "GPT-3.5 trap" in result.verification.claim_results[0].claim.supporting_quote
+
+
 def test_malformed_json_from_provider_degrades_gracefully():
     chunks = [make_retrieved_chunk("c1", "some text")]
     pipeline = RagPipeline(

@@ -26,6 +26,74 @@ _EMPTY_VERIFICATION = VerificationReport(
 )
 _ZERO_CONFIDENCE = ConfidenceScores(retrieval=0.0, citations=0.0, coverage=0.0, overall=0.0)
 
+_KEY_TERMINATORS = (":",)
+_VALUE_TERMINATORS = (",", "}", "]")
+
+
+def _repair_unescaped_quotes(raw: str) -> str:
+    """Escape literal '"' characters that appear inside a JSON string value
+    but aren't the string's real delimiter.
+
+    Verbatim-quote instructions mean the model often copies a source
+    sentence that itself contains quote marks (e.g. the paper says the
+    "GPT-3.5 trap") without escaping them, breaking JSON parsing. A quote
+    only opens/closes a real string if the surrounding tokens match what's
+    structurally expected: a string starting right after '{' or ',' is an
+    object KEY and must close before ':'; a string starting after ':' or
+    '[' is a VALUE and must close before ',', '}', or ']'. Distinguishing
+    key vs. value context (not just "any structural char") matters because
+    a bare '"' followed by ':' inside a value (e.g. a quoted term followed
+    by a colon in ordinary English) would otherwise be misread as a key
+    terminator. Any quote that doesn't fit its expected terminator is a
+    literal character inside the string and gets escaped.
+    """
+    out: list[str] = []
+    in_string = False
+    expect_terminators: tuple[str, ...] = ()
+    containers: list[str] = []  # '{' or '[' for each open container
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == "\\" and i + 1 < n:
+            out.append(raw[i:i + 2])
+            i += 2
+            continue
+        if not in_string and ch in "{[":
+            containers.append(ch)
+        elif not in_string and ch in "}]":
+            if containers:
+                containers.pop()
+        if ch == '"':
+            if not in_string:
+                prev = next((c for c in reversed(out) if not c.isspace()), None)
+                if prev == "{" or (prev == "," and containers and containers[-1] == "{"):
+                    in_string = True
+                    expect_terminators = _KEY_TERMINATORS
+                    out.append(ch)
+                elif prev is None or prev in (":", "[") or (
+                    prev == "," and containers and containers[-1] == "["
+                ):
+                    in_string = True
+                    expect_terminators = _VALUE_TERMINATORS
+                    out.append(ch)
+                else:
+                    out.append('\\"')
+            else:
+                j = i + 1
+                while j < n and raw[j].isspace():
+                    j += 1
+                nxt = raw[j] if j < n else None
+                if nxt is None or nxt in expect_terminators:
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append('\\"')
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
 
 class RagPipeline:
     def __init__(self, retriever, generation_provider: GenerationProvider, chunk_store=None, prompt_version: str = "v1"):
@@ -161,9 +229,17 @@ class RagPipeline:
         )
         try:
             parsed = json.loads(raw_output)
+        except json.JSONDecodeError:
+            try:
+                parsed = json.loads(_repair_unescaped_quotes(raw_output))
+            except json.JSONDecodeError as e:
+                degraded = RagAnswerDraft(answer=raw_output, claims=[], metadata=metadata)
+                return degraded, f"failed to parse structured generation output: {e}"
+
+        try:
             claims = [Claim(**c) for c in parsed.get("claims", [])]
             draft = RagAnswerDraft(answer=parsed["answer"], claims=claims, metadata=metadata)
             return draft, None
-        except (json.JSONDecodeError, KeyError, ValidationError, TypeError) as e:
+        except (KeyError, ValidationError, TypeError) as e:
             degraded = RagAnswerDraft(answer=raw_output, claims=[], metadata=metadata)
             return degraded, f"failed to parse structured generation output: {e}"

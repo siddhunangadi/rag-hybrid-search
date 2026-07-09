@@ -8,3 +8,4 @@ data/
 .gstack/
 .claude/
 .DS_Store
+.env

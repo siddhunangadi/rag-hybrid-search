@@ -22,7 +22,7 @@ class NvidiaRerankProvider(RerankProvider):
         self,
         api_key: str,
         model: str = "nvidia/rerank-qa-mistral-4b",
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ):
         self._model = model
         self._client = httpx.Client(

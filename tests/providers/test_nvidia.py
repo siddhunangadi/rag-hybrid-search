@@ -46,6 +46,42 @@ def test_generate_calls_chat_completions_and_returns_content(provider, mocker):
     assert result == "an answer"
 
 
+def test_generate_sets_a_generous_default_max_tokens_to_avoid_truncation(provider, mocker):
+    """Without an explicit max_tokens, the API's own default can be too low
+    for our JSON-schema answers (which embed verbatim source quotes),
+    silently truncating the response into invalid JSON mid-string. Always
+    send an explicit, generous default unless the caller overrides it."""
+    mock_response = httpx.Response(
+        status_code=200,
+        json={"choices": [{"message": {"content": "an answer"}}]},
+        request=httpx.Request(
+            "POST", "https://integrate.api.nvidia.com/v1/chat/completions"
+        ),
+    )
+    mock_post = mocker.patch.object(httpx.Client, "post", return_value=mock_response)
+
+    provider.generate("What is RAG?")
+
+    called_json = mock_post.call_args.kwargs["json"]
+    assert called_json["max_tokens"] >= 1024
+
+
+def test_generate_respects_caller_supplied_max_tokens(provider, mocker):
+    mock_response = httpx.Response(
+        status_code=200,
+        json={"choices": [{"message": {"content": "an answer"}}]},
+        request=httpx.Request(
+            "POST", "https://integrate.api.nvidia.com/v1/chat/completions"
+        ),
+    )
+    mock_post = mocker.patch.object(httpx.Client, "post", return_value=mock_response)
+
+    provider.generate("What is RAG?", max_tokens=50)
+
+    called_json = mock_post.call_args.kwargs["json"]
+    assert called_json["max_tokens"] == 50
+
+
 def test_model_name_and_dimension_reflect_configured_model(provider):
     assert provider.model_name == "nvidia/nv-embedqa-e5-v5"
     assert provider.dimension == 1024

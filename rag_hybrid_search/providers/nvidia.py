@@ -16,7 +16,7 @@ class NvidiaProvider(EmbeddingProvider, GenerationProvider):
         api_key: str,
         embedding_model: str = "nvidia/nv-embedqa-e5-v5",
         generation_model: str = "meta/llama-3.1-70b-instruct",
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ):
         self._api_key = api_key
         self._embedding_model = embedding_model
@@ -39,14 +39,13 @@ class NvidiaProvider(EmbeddingProvider, GenerationProvider):
         return [item["embedding"] for item in data]
 
     def generate(self, prompt: str, **kwargs) -> str:
-        response = self._client.post(
-            f"{_BASE_URL}/chat/completions",
-            json={
-                "model": self._generation_model,
-                "messages": [{"role": "user", "content": prompt}],
-                **kwargs,
-            },
-        )
+        payload = {
+            "model": self._generation_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024,
+        }
+        payload.update(kwargs)
+        response = self._client.post(f"{_BASE_URL}/chat/completions", json=payload)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
 

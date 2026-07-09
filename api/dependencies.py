@@ -167,6 +167,11 @@ def build_container(settings: Settings | None = None) -> Container:
     chunk_store = SqliteChunkStore(db_path=str(data_dir / _CHUNK_DB_FILENAME))
     vector_store = ChromaVectorStore(data_dir=str(data_dir / _CHROMA_DIRNAME))
     bm25_index = BM25Index(index_path=str(data_dir / _BM25_INDEX_FILENAME))
+    # BM25Index.__init__ starts empty (no disk read) -- without this, every
+    # process restart silently wipes sparse/keyword retrieval to zero
+    # results until the next document upload rebuilds it, even though
+    # bm25.pkl on disk still has the full corpus indexed.
+    bm25_index.load()
     index_manager = IndexManager(chunk_store, vector_store, bm25_index)
 
     chunker = RecursiveChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)

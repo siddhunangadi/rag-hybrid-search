@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from rag_hybrid_search.ingestion.chunkers.base import Chunker
@@ -7,6 +8,8 @@ from rag_hybrid_search.models import Chunk, EmbeddingRecord, IndexStatus
 from rag_hybrid_search.providers.base import EmbeddingProvider
 from rag_hybrid_search.storage.base import ChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionPipeline:
@@ -29,23 +32,43 @@ class IngestionPipeline:
         self._dedup_text_threshold = dedup_text_threshold
 
     def ingest(self, path: str) -> IndexStatus:
+        logger.info("ingest: start path=%s", path)
         document = self.loader.load(path)
+        logger.info(
+            "ingest: loaded document_id=%s format=%s chars=%d",
+            document.document_id, document.format, len(document.content),
+        )
 
         existing_hash = self.chunk_store.get_document_hash(path)
         if existing_hash == document.document_id:
+            logger.info("ingest: unchanged, skipping path=%s", path)
             return IndexStatus.READY
         if existing_hash is not None:
+            logger.info("ingest: content changed, removing old document_id=%s", existing_hash)
             self.index_manager.remove_document(existing_hash)
 
         new_chunks = self.chunker.chunk(document)
+        logger.info("ingest: chunked into %d chunks (strategy=%s)", len(new_chunks), self.chunker.__class__.__name__)
         if not new_chunks:
+            logger.info("ingest: no chunks produced, done path=%s", path)
             return IndexStatus.READY
+        logger.debug(
+            "ingest: chunk previews %s",
+            [(c.chunk_id, c.chunk_index, c.char_count, c.text[:80]) for c in new_chunks],
+        )
 
         embeddings = self.embedding_provider.embed([c.text for c in new_chunks])
+        logger.info(
+            "ingest: embedded %d chunks with provider=%s model=%s dim=%d",
+            len(embeddings), type(self.embedding_provider).__name__,
+            self.embedding_provider.model_name, self.embedding_provider.dimension,
+        )
         existing_pairs = self._existing_chunk_embeddings()
+        logger.debug("ingest: comparing against %d existing chunks for dedup", len(existing_pairs))
 
         surviving_chunks: list[Chunk] = []
         surviving_records: list[EmbeddingRecord] = []
+        dropped = 0
         for chunk, embedding in zip(new_chunks, embeddings):
             if is_duplicate(
                 chunk,
@@ -54,6 +77,8 @@ class IngestionPipeline:
                 self._dedup_cosine_threshold,
                 self._dedup_text_threshold,
             ):
+                dropped += 1
+                logger.debug("ingest: dropped duplicate chunk_id=%s index=%d", chunk.chunk_id, chunk.chunk_index)
                 continue
             record = EmbeddingRecord(
                 chunk_id=chunk.chunk_id,
@@ -67,13 +92,18 @@ class IngestionPipeline:
             surviving_records.append(record)
             existing_pairs.append((chunk, embedding))
 
+        logger.info("ingest: dedup dropped %d/%d chunks, %d survive", dropped, len(new_chunks), len(surviving_chunks))
         if not surviving_chunks:
+            logger.info("ingest: nothing new to store, done path=%s", path)
             return IndexStatus.READY
 
         for chunk in surviving_chunks:
             self.chunk_store.put(chunk, source_path=path)
+        logger.info("ingest: stored %d chunks in chunk_store", len(surviving_chunks))
 
-        return self.index_manager.index(surviving_chunks, surviving_records)
+        status = self.index_manager.index(surviving_chunks, surviving_records)
+        logger.info("ingest: indexed %d chunks, status=%s path=%s", len(surviving_chunks), status, path)
+        return status
 
     def _existing_chunk_embeddings(self) -> list[tuple[Chunk, list[float]]]:
         existing_chunks = list(self.chunk_store.all())

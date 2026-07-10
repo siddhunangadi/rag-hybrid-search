@@ -1,5 +1,7 @@
 """FastAPI application entrypoint: wires the app-lifetime singletons and router."""
 
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -12,6 +14,11 @@ from api.routes import router
 from rag_hybrid_search.config import Settings
 
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

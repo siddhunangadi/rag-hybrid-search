@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from pydantic import ValidationError
 
 from rag_hybrid_search.compliance.citation_mapper import build_citations
 from rag_hybrid_search.compliance.query_router import route_query
+from rag_hybrid_search.trace import RequestTrace
 from rag_pipeline.confidence_scorer import score_confidence
 from rag_pipeline.context_builder import build_context
 from rag_pipeline.generation_provider import GenerationProvider
@@ -115,24 +117,46 @@ class RagPipeline:
         return self._prompt_version
 
     def answer(self, question: str, max_chunks: int = 5, verify: bool = True) -> RagAnswer:
+        dev_trace = RequestTrace(question, {
+            "Generation": type(self._generation_provider).__name__,
+            "Max Chunks": max_chunks,
+            "Verify": verify,
+            "Prompt Version": self._prompt_version,
+        })
+
         if self._chunk_store is not None:
-            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever)
+            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever, dev_trace=dev_trace)
         else:
-            retrieved_chunks, _trace = self._retriever.retrieve(question)
+            retrieved_chunks, _trace = self._retriever.retrieve(question, dev_trace=dev_trace)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
 
         context = build_context(retrieved_chunks)
         prompt = build_prompt(question, context, prompt_version=self._prompt_version)
+        dev_trace.log_prompt(prompt)
 
         try:
+            gen_start = time.perf_counter()
             raw_output = self._generation_provider.generate(prompt)
+            gen_latency_ms = (time.perf_counter() - gen_start) * 1000
+            dev_trace.log_generation(
+                type(self._generation_provider).__name__,
+                getattr(self._generation_provider, "model_name", "unknown"),
+                raw_output, gen_latency_ms,
+            )
         except Exception as e:
+            dev_trace.finish()
             return RagAnswer(
                 answer=None, citations=[], confidence=_ZERO_CONFIDENCE,
                 verification=_EMPTY_VERIFICATION, error=str(e),
             )
 
         draft, parse_error = self._parse_draft(raw_output)
+        dev_trace.log_parse(
+            success=parse_error is None,
+            claims_count=len(draft.claims),
+            quotes_count=sum(1 for c in draft.claims if c.supporting_quote),
+            error=parse_error,
+        )
 
         if verify:
             verification = verify_citations(draft, context)
@@ -143,9 +167,14 @@ class RagPipeline:
                 retrieval=score_confidence(retrieved_chunks, _EMPTY_VERIFICATION, context).retrieval,
                 citations=0.0, coverage=0.0, overall=0.0,
             )
+        dev_trace.log_verification(verification)
+        dev_trace.log_confidence(confidence)
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
         structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
+        documents_used = len({r.chunk.document_id for r in retrieved_chunks})
+        dev_trace.log_summary(draft.answer, chunks_used=len(retrieved_chunks), documents_used=documents_used)
+        dev_trace.finish()
 
         return RagAnswer(
             answer=draft.answer, citations=citations, structured_citations=structured_citations,

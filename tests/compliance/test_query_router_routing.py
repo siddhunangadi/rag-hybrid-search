@@ -36,7 +36,7 @@ def test_semantic_query_delegates_to_retriever_unchanged():
     results, trace = route_query("What is data minimization?", chunk_store, retriever)
 
     chunk_store.get_by_legal_metadata.assert_not_called()
-    retriever.retrieve.assert_called_once_with("What is data minimization?")
+    retriever.retrieve.assert_called_once_with("What is data minimization?", dev_trace=None)
     assert results[0].chunk.chunk_id == "c2"
 
 
@@ -65,7 +65,7 @@ def test_metadata_query_with_no_matching_chunks_returns_empty_not_unfiltered():
     results, trace = route_query("Show only HIPAA documents", chunk_store, retriever)
 
     chunk_store.get_by_legal_metadata.assert_called_once_with({"regulation": "HIPAA"})
-    retriever.retrieve.assert_called_once_with("Show only HIPAA documents")
+    retriever.retrieve.assert_called_once_with("Show only HIPAA documents", dev_trace=None)
     assert results == []
 
 
@@ -78,5 +78,5 @@ def test_mixed_query_with_no_matching_chunks_returns_empty_not_unfiltered():
     results, trace = route_query("Explain Article 17 in plain terms", chunk_store, retriever)
 
     chunk_store.get_by_legal_metadata.assert_called_once_with({"article": "17"})
-    retriever.retrieve.assert_called_once_with("Explain Article 17 in plain terms")
+    retriever.retrieve.assert_called_once_with("Explain Article 17 in plain terms", dev_trace=None)
     assert results == []

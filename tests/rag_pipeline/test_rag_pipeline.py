@@ -9,7 +9,7 @@ class FakeRetriever:
     def __init__(self, chunks):
         self._chunks = chunks
 
-    def retrieve(self, query):
+    def retrieve(self, query, dev_trace=None):
         return self._chunks, RetrievalTrace()
 
 

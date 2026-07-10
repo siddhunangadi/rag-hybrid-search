@@ -65,7 +65,7 @@ def classify_query(question: str) -> QueryIntent:
 
 
 def route_query(
-    question: str, chunk_store: ChunkStore, retriever: HybridRetriever
+    question: str, chunk_store: ChunkStore, retriever: HybridRetriever, dev_trace=None
 ) -> tuple[list[RetrievedChunk], RetrievalTrace]:
     """Route a question to the retrieval path matching its classified intent.
 
@@ -93,8 +93,8 @@ def route_query(
 
     if intent.kind in ("metadata", "mixed"):
         matched_ids = {c.chunk_id for c in chunk_store.get_by_legal_metadata(intent.filters)}
-        results, trace = retriever.retrieve(question)
+        results, trace = retriever.retrieve(question, dev_trace=dev_trace)
         results = [r for r in results if r.chunk.chunk_id in matched_ids]
         return results, trace
 
-    return retriever.retrieve(question)
+    return retriever.retrieve(question, dev_trace=dev_trace)

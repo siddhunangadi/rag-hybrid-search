@@ -3,6 +3,7 @@ import pytest
 from rag_pipeline.eval.metrics import (
     build_retrieval_record,
     citation_precision_recall_f1,
+    error_record,
     evaluate_question,
     verdict_score,
 )
@@ -112,3 +113,59 @@ def test_evaluate_question_assembles_full_record():
     assert record["objective_metrics"]["verification_pass"] is True
     assert record["judge"]["verdict"] == "CORRECT"
     assert record["retrieval"]["retrieved_chunk_ids"] == ["c1"]
+
+
+def test_evaluate_question_records_error_status_when_rag_answer_has_error():
+    question = EvalQuestion(
+        id="q002", question="What is Y?", category="factual",
+        expected=ExpectedAnswer(answer="Y is a thing.", citation_doc_ids=["d1"]),
+    )
+    verification = VerificationReport(
+        total_claims=0, verified_claims=0, failed_claims=0,
+        hallucinated_doc_ids=[], missing_quotes=[], claim_results=[],
+    )
+    rag_answer = RagAnswer(
+        answer=None, citations=[],
+        confidence=ConfidenceScores(retrieval=0.0, citations=0.0, coverage=0.0, overall=0.0),
+        verification=verification, citation_status=CitationStatus.OK,
+        error="generation degraded: could not parse model output",
+    )
+    trace_data = {}
+    judge_provider = CannedJudgeProvider("{}")
+
+    record = evaluate_question(question, rag_answer, trace_data, latency_ms=50.0, judge_provider=judge_provider)
+
+    expected = error_record(
+        question, error_type="pipeline_error",
+        error_message="generation degraded: could not parse model output",
+    )
+    assert record == expected
+    assert record["status"] == "error"
+    assert record["error_type"] == "pipeline_error"
+    assert record["error_message"] == "generation degraded: could not parse model output"
+
+
+def test_evaluate_question_verification_pass_false_when_no_claims():
+    question = EvalQuestion(
+        id="q003", question="What is Z?", category="factual",
+        expected=ExpectedAnswer(answer="Z is a thing.", citation_doc_ids=["d1"]),
+    )
+    verification = VerificationReport(
+        total_claims=0, verified_claims=0, failed_claims=0,
+        hallucinated_doc_ids=[], missing_quotes=[], claim_results=[],
+    )
+    rag_answer = RagAnswer(
+        answer="", citations=[],
+        confidence=ConfidenceScores(retrieval=1.0, citations=1.0, coverage=1.0, overall=1.0),
+        verification=verification, citation_status=CitationStatus.OK, error=None,
+    )
+    trace_data = {
+        "dense": [], "rerank": {"selected": []}, "pruning": {"before": 0, "after": 0, "dropped": []},
+        "prompt": {"chars": 0, "approx_tokens": 0}, "summary": {"chunks_used": 0, "documents_used": 0},
+        "timings_ms": {"dense_search": 1.0, "rerank": 1.0, "generation": 1.0, "total": 3.0},
+    }
+    judge_provider = CannedJudgeProvider('{"verdict": "UNSUPPORTED", "reasoning": "no answer"}')
+
+    record = evaluate_question(question, rag_answer, trace_data, latency_ms=10.0, judge_provider=judge_provider)
+
+    assert record["objective_metrics"]["verification_pass"] is False

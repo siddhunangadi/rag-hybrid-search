@@ -45,11 +45,15 @@ def evaluate_question(
     question: EvalQuestion, rag_answer: RagAnswer, trace_data: dict, latency_ms: float,
     judge_provider, judge_prompt_version: str = "v1",
 ) -> dict:
+    if rag_answer.error is not None:
+        return error_record(question, error_type="pipeline_error", error_message=rag_answer.error)
+
     predicted_citations = rag_answer.citations
     expected_citations = question.expected.citation_doc_ids
     precision, recall, f1 = citation_precision_recall_f1(predicted_citations, expected_citations)
 
-    verification_pass = all(cr.passed for cr in rag_answer.verification.claim_results)
+    claim_results = rag_answer.verification.claim_results
+    verification_pass = bool(claim_results) and all(cr.passed for cr in claim_results)
 
     judge_result = judge_answer(
         question.question, question.expected.answer, rag_answer.answer or "",

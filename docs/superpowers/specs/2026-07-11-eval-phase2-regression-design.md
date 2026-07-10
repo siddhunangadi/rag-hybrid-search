@@ -32,13 +32,18 @@ This is snapshot testing applied to ML quality metrics.
 ```
 scripts/run_eval.py  (CLI flags, table rendering, exit codes)
         │
-        ├── rag_pipeline/eval/baseline.py     (save/load/validate baseline JSON)
-        ├── rag_pipeline/eval/thresholds.py   (load thresholds.yaml, defaults)
+        ├── rag_pipeline/eval/schema.py       (Pydantic models: Baseline, EvaluationSnapshot,
+        │                                      Thresholds, Finding, ComparisonResult)
+        ├── rag_pipeline/eval/baseline.py     (save/load baseline JSON — I/O only,
+        │                                      validation delegated to schema models)
+        ├── rag_pipeline/eval/thresholds.py   (load thresholds.yaml, merge over defaults)
         └── rag_pipeline/eval/comparison.py   (pure compare logic, no I/O)
 ```
 
-`comparison.py` never reads files or prints — takes dicts, returns a result object.
-All I/O lives at the edges (`baseline.py`, `run_eval.py`).
+Typed models throughout — no nested-dict plumbing. The project already favors Pydantic
+(`RagAnswer`, `Chunk`, `RetrievalTrace`); baselines follow suit. `comparison.py` never
+reads files or prints — takes models, returns `ComparisonResult`. All I/O lives at the
+edges (`baseline.py`, `run_eval.py`).
 
 ## Baseline schema (`eval/baselines/<name>.json`)
 
@@ -49,6 +54,12 @@ All I/O lives at the edges (`baseline.py`, `run_eval.py`).
   "git_commit": "abc1234",
   "package_version": "0.x.y",
   "question_set_hash": "sha256 of canonical questions.yaml content",
+  "branch": "main",
+  "notes": "Updated after chunking optimization",
+  "pipeline_config": {
+    "embedding_model": "...", "reranker": "...", "generation_model": "...",
+    "chunk_size": 512, "chunk_overlap": 64, "retrieval_top_k": 8
+  },
   "summary": { "...": "same shape as report.json summary block" },
   "per_question": {
     "q001": {"objective_metrics": {"citation_precision": 1.0, "...": "..."}, "status": "success"}
@@ -59,6 +70,11 @@ All I/O lives at the edges (`baseline.py`, `run_eval.py`).
 - `baseline_version` enables painless future schema migrations.
 - `question_set_hash`: comparing runs over different question sets is meaningless.
   Compare aborts with a clear error on hash mismatch, forcing a deliberate baseline refresh.
+- `pipeline_config`: captured from Settings at baseline creation (same sanitization as
+  report metadata). Questions unchanged but embedding model swapped → numbers aren't
+  comparable. Config mismatch produces a prominent WARN banner in compare output (not an
+  abort — comparing across config changes is sometimes the point, e.g. A/B baselines).
+- `notes` / `branch` / `created_by` optional free-text metadata — `--notes "..."` flag.
 - `per_question` stores each question's `objective_metrics` and `status` keyed by id.
 
 ## Thresholds (`eval/thresholds.yaml`)
@@ -79,7 +95,10 @@ Missing file → hardcoded defaults identical to the above. Partial file → mer
 
 ## Comparison semantics
 
-`compare_to_baseline(current_summary, current_per_question, baseline, thresholds) -> ComparisonResult`
+`compare(current: EvaluationSnapshot, baseline: EvaluationSnapshot, thresholds: Thresholds) -> ComparisonResult`
+
+`EvaluationSnapshot` wraps summary + per-question metrics + question hash + pipeline
+config — one object per side, built from a live run or loaded from a baseline file.
 
 - Per aggregate metric: delta = current − baseline. Drop ≥ fail → FAIL; ≥ warn → WARN; else OK.
   Improvements reported as info, never gate.
@@ -110,8 +129,16 @@ citation_recall       0.76      0.73      -0.03   WARN
 citation_f1 (q017)    1.00      0.20      -0.80   FAIL (per-question)
 ```
 
-Missing baseline → clear message: run `--update-baseline` first (exit 1 for compare).
-Unknown `baseline_version` or corrupt JSON → clear error, exit 1.
+Exit codes (automation-friendly):
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (incl. warnings) |
+| 1 | Regression (FAIL finding) |
+| 2 | Baseline missing (message: run `--update-baseline` first) |
+| 3 | Baseline corrupt / unknown `baseline_version` |
+| 4 | Question-set hash mismatch |
+| 5 | CLI usage error |
 
 ## CI (`.github/workflows/ci.yml`)
 
@@ -127,8 +154,10 @@ diff in PR.
 
 ## Testing (TDD, matching Phase 1 style)
 
-Unit (`tests/eval/test_baseline.py`, `test_thresholds.py`, `test_comparison.py`):
+Unit (`tests/eval/test_schema.py`, `test_baseline.py`, `test_thresholds.py`, `test_comparison.py`):
+- schema models validate/reject malformed payloads; snapshot built from run and from baseline file are equivalent
 - baseline save/load round-trip; corrupt JSON and unknown version rejected clearly
+- pipeline_config mismatch produces WARN banner, does not abort
 - question-set hash mismatch aborts compare
 - thresholds: defaults, full file, partial merge
 - comparison: OK/WARN/FAIL per tier, improvement not gating, judge skip when absent,
@@ -139,8 +168,16 @@ Integration (`tests/eval/test_run_eval_baseline.py`):
 - `--fixture-pipeline --update-baseline` then `--compare-baseline` exits 0
 - degraded fixture metrics → compare exits 1
 
-## Deferred (Phase 2.5, not built now)
+## Deferred (not built now)
 
-- HTML trend history / graphs over multiple runs
+- **Phase 2.1:** HTML comparison report (baseline vs current, warnings/failures highlighted)
+- **Phase 3:** trend history over multiple runs, graphs
+- Threshold direction strategies (`higher_is_better` / `lower_is_better` / relative) —
+  current metrics are all higher-is-better ratios; add when latency/cost gating lands
 - Nightly judge workflow
 - Baseline auto-update automation
+
+## Roadmap context
+
+Phase 1 evaluation → **Phase 2 regression (this spec)** → Phase 3 trend history →
+Phase 4 performance benchmarking → Phase 5 dataset versioning → Phase 6 quality dashboard.

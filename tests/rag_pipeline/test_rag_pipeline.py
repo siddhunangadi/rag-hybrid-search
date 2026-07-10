@@ -450,3 +450,20 @@ def test_comparative_question_keeps_multiple_chunks_after_pruning():
 
     assert result.error is None
     assert {c for c in result.citations} == {"d1", "d2", "d3"}
+
+
+def test_answer_accepts_injected_dev_trace_and_exposes_its_data():
+    from rag_hybrid_search.trace import RequestTrace
+
+    chunks = [make_retrieved_chunk("c1", "Some evidence text.")]
+    retriever = FakeRetriever(chunks)
+    provider = MockProvider()
+    pipeline = RagPipeline(retriever, provider)
+
+    trace = RequestTrace("What is X?", {"Generation": "MockProvider"})
+    result = pipeline.answer("What is X?", dev_trace=trace)
+
+    assert result.error is None
+    assert trace.data["question"] == "What is X?"
+    assert "timings_ms" in trace.data
+    assert trace.data["summary"]["chunks_used"] == 1

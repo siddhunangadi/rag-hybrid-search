@@ -88,6 +88,13 @@ class RequestTrace:
             print(f"\nQuestion           : {question}")
             _kv(Characters=len(question), Words=len(question.split()))
 
+    @property
+    def data(self) -> dict:
+        """Read-only view of the trace's collected data. Populated
+        incrementally by each ``log_*`` call and finalized (timings,
+        runtime info) once ``finish()`` runs."""
+        return self._data
+
     def mark(self, name: str, elapsed_ms: float) -> None:
         self._timings[name] = elapsed_ms
 

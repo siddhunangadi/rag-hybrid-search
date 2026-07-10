@@ -263,8 +263,11 @@ class RagPipeline:
     def prompt_version(self) -> str:
         return self._prompt_version
 
-    def answer(self, question: str, max_chunks: int = 5, verify: bool = True) -> RagAnswer:
-        dev_trace = RequestTrace(question, {
+    def answer(
+        self, question: str, max_chunks: int = 5, verify: bool = True,
+        dev_trace: RequestTrace | None = None,
+    ) -> RagAnswer:
+        dev_trace = dev_trace or RequestTrace(question, {
             "Generation": type(self._generation_provider).__name__,
             "Max Chunks": max_chunks,
             "Verify": verify,

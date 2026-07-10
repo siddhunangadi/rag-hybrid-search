@@ -94,3 +94,34 @@ def test_log_verification_ratio_zero_when_no_claims():
 
     trace.log_verification(FakeVerification())
     assert trace._data["verification"]["verification_ratio"] == 0.0
+
+
+def test_log_query_decomposition_records_subqueries_raw_output_and_coverage(monkeypatch, capsys):
+    monkeypatch.setenv("TRACE_RAG", "true")
+    trace = RequestTrace("question", {})
+
+    trace.log_query_decomposition(
+        True, ["RQ1 findings", "RQ2 findings", "RQ3 findings"],
+        raw_llm_output='["RQ1 findings", "RQ2 findings", "RQ3 findings"]',
+        concepts_retrieved=2,
+    )
+
+    data = trace._data["query_decomposition"]
+    assert data["subqueries"] == ["RQ1 findings", "RQ2 findings", "RQ3 findings"]
+    assert data["concepts_requested"] == 3
+    assert data["concepts_retrieved"] == 2
+    assert data["coverage"] == pytest.approx(2 / 3)
+    out = capsys.readouterr().out
+    assert "QUERY DECOMPOSITION" in out
+    assert "RQ1 findings" in out
+    assert "Coverage" in out
+    assert "67%" in out
+    assert "Raw decomposition output" in out
+
+
+def test_log_query_decomposition_coverage_zero_when_no_subqueries():
+    trace = RequestTrace("question", {})
+
+    trace.log_query_decomposition(False, [], raw_llm_output=None, concepts_retrieved=0)
+
+    assert trace._data["query_decomposition"]["coverage"] == 0.0

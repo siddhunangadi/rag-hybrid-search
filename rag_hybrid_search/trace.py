@@ -196,6 +196,30 @@ class RequestTrace:
             "Saved": f"{saved} reranker evaluations",
         })
 
+    def log_query_decomposition(
+        self, is_comparative: bool, subqueries: list[str],
+        raw_llm_output: str | None, concepts_retrieved: int,
+    ) -> None:
+        coverage = concepts_retrieved / len(subqueries) if subqueries else 0.0
+        self._data["query_decomposition"] = {
+            "comparative": is_comparative, "subqueries": subqueries,
+            "raw_llm_output": raw_llm_output,
+            "concepts_requested": len(subqueries), "concepts_retrieved": concepts_retrieved,
+            "coverage": coverage,
+        }
+        if not self.enabled:
+            return
+        _section("STEP 1b -- QUERY DECOMPOSITION")
+        _kv(Comparative=is_comparative, **{
+            "Concepts requested": len(subqueries),
+            "Concepts retrieved": concepts_retrieved,
+            "Coverage": f"{coverage * 100:.0f}%",
+        })
+        for i, q in enumerate(subqueries, 1):
+            print(f"  {i}. {q!r}")
+        if raw_llm_output is not None:
+            print(f"\n  Raw decomposition output: {raw_llm_output!r}")
+
     def log_pruning(self, before: list, after: list) -> None:
         kept_ids = {r.chunk.chunk_id for r in after}
         dropped = [r.chunk.chunk_id for r in before if r.chunk.chunk_id not in kept_ids]

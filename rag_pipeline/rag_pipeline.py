@@ -1,6 +1,9 @@
 import json
+import logging
+import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +29,9 @@ from rag_pipeline.models import (
 )
 from rag_pipeline.prompt_builder import build_prompt
 from rag_pipeline.quote_extractor import extract_supporting_quotes
+from rag_pipeline.query_decomposer import decompose_query, is_comparative_query
+
+logger = logging.getLogger(__name__)
 
 _EMPTY_VERIFICATION = VerificationReport(
     total_claims=0, verified_claims=0, failed_claims=0,
@@ -120,6 +126,94 @@ def _inline_citation_drift(answer: str, structured_ids: set[str]) -> tuple[list[
     return sorted(inline_set, key=lambda x: (len(x), x)), ok
 
 
+_FREQUENCY_BONUS_SCALE = 0.15
+
+
+def _merge_multi_query_results(results_per_query: list[list]) -> list:
+    """Merge reranked result lists from multiple sub-query retrievals into
+    one ranked list, deduping by chunk_id.
+
+    Each sub-query already went through the full retrieve() pipeline
+    (dense+sparse+fuse+rerank) independently. For ranking the merged list,
+    a chunk that surfaced in N independent sub-query retrievals is a
+    stronger relevance signal than its single best rerank_score alone
+    would suggest -- appearing under multiple distinct queries means
+    multiple lines of evidence point to it, not just one lucky embedding
+    match. combined_score = best_rerank_score + 0.15 * log2(appearances),
+    so a single appearance is unaffected (log2(1) == 0, matches
+    pre-frequency-weighting behavior) and each additional appearance adds
+    a *diminishing* bonus rather than a linear one -- a chunk with a
+    clearly weaker score shouldn't out-rank a much stronger one just by
+    showing up many times (log2(8) is only 2x log2(4), not 8x). The chunk
+    object itself keeps its original (best) rerank_score unchanged --
+    combined_score is sort-only, not stored on the model. Chunks with
+    rerank_score=None (e.g. PassthroughReranker) sort last but are never
+    dropped.
+    """
+    best_by_id: dict[str, object] = {}
+    appearances: dict[str, int] = {}
+    for results in results_per_query:
+        for r in results:
+            chunk_id = r.chunk.chunk_id
+            appearances[chunk_id] = appearances.get(chunk_id, 0) + 1
+            existing = best_by_id.get(chunk_id)
+            if existing is None:
+                best_by_id[chunk_id] = r
+                continue
+            existing_score = existing.rerank_score
+            new_score = r.rerank_score
+            if new_score is not None and (existing_score is None or new_score > existing_score):
+                best_by_id[chunk_id] = r
+
+    def combined_score(r) -> float:
+        base = r.rerank_score if r.rerank_score is not None else 0.0
+        bonus = _FREQUENCY_BONUS_SCALE * math.log2(appearances[r.chunk.chunk_id])
+        return base + bonus
+
+    merged = sorted(
+        best_by_id.values(),
+        key=lambda r: (r.rerank_score is None, -combined_score(r)),
+    )
+    return [r.model_copy(update={"final_rank": i}) for i, r in enumerate(merged, start=1)]
+
+
+_MAX_CONCURRENT_RETRIEVAL_WORKERS = 4
+
+
+def _retrieve_subqueries_concurrently(subqueries: list[str], retrieve_one) -> list[list]:
+    """Run `retrieve_one(q, None)` for every sub-query in parallel.
+
+    Worker count is capped at `_MAX_CONCURRENT_RETRIEVAL_WORKERS` regardless
+    of how many sub-queries there are, so if `max_subqueries` is ever raised
+    well beyond today's default of 4, thread creation doesn't scale
+    1:1 with it.
+
+    A single sub-query's retrieve() call failing (provider timeout,
+    connection error, etc.) must not abort the other sub-queries or the
+    whole request -- each future is resolved individually, a failure is
+    logged and contributes an empty result list for that sub-query (it
+    simply doesn't show up in the merged context and drags down
+    `concepts_retrieved`/coverage), and every other sub-query's results
+    are still used. dev_trace is intentionally not threaded through here
+    (see the call site) -- concurrent writers aren't safe against the
+    shared RequestTrace state.
+    """
+    max_workers = min(len(subqueries), _MAX_CONCURRENT_RETRIEVAL_WORKERS)
+    results: list[list] = [[] for _ in subqueries]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(retrieve_one, q, None): i for i, q in enumerate(subqueries)
+        }
+        for future in future_to_index:
+            i = future_to_index[future]
+            try:
+                results[i] = future.result()
+            except Exception:
+                logger.exception("retrieve() failed for sub-query %r -- treating as empty", subqueries[i])
+                results[i] = []
+    return results
+
+
 def _build_claim_diagnostics(verification: VerificationReport, context) -> list[dict]:
     """Per-claim citation/quote diagnostics for TRACE_RAG, computed once here
     (not inside rag_hybrid_search.trace, which must stay pipeline-agnostic).
@@ -177,10 +271,28 @@ class RagPipeline:
             "Prompt Version": self._prompt_version,
         })
 
-        if self._chunk_store is not None:
-            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever, dev_trace=dev_trace)
+        comparative = is_comparative_query(question)
+        decompose_capture: dict = {}
+        subqueries = (
+            decompose_query(question, self._generation_provider, capture=decompose_capture)
+            if comparative else [question]
+        )
+
+        def _retrieve_one(q: str, trace_for_call):
+            if self._chunk_store is not None:
+                return route_query(q, self._chunk_store, self._retriever, dev_trace=trace_for_call)[0]
+            return self._retriever.retrieve(q, dev_trace=trace_for_call)[0]
+
+        if len(subqueries) == 1:
+            results_per_query = [_retrieve_one(subqueries[0], dev_trace)]
         else:
-            retrieved_chunks, _trace = self._retriever.retrieve(question, dev_trace=dev_trace)
+            results_per_query = _retrieve_subqueries_concurrently(subqueries, _retrieve_one)
+
+        concepts_retrieved = sum(1 for results in results_per_query if results)
+        dev_trace.log_query_decomposition(
+            comparative, subqueries, decompose_capture.get("raw"), concepts_retrieved,
+        )
+        retrieved_chunks = _merge_multi_query_results(results_per_query)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
         pruned_chunks = prune_by_score_margin(retrieved_chunks, self._context_prune_margin)
         dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
@@ -268,10 +380,28 @@ class RagPipeline:
             "Streaming": True,
         })
 
-        if self._chunk_store is not None:
-            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever, dev_trace=dev_trace)
+        comparative = is_comparative_query(question)
+        decompose_capture: dict = {}
+        subqueries = (
+            decompose_query(question, self._generation_provider, capture=decompose_capture)
+            if comparative else [question]
+        )
+
+        def _retrieve_one(q: str, trace_for_call):
+            if self._chunk_store is not None:
+                return route_query(q, self._chunk_store, self._retriever, dev_trace=trace_for_call)[0]
+            return self._retriever.retrieve(q, dev_trace=trace_for_call)[0]
+
+        if len(subqueries) == 1:
+            results_per_query = [_retrieve_one(subqueries[0], dev_trace)]
         else:
-            retrieved_chunks, _trace = self._retriever.retrieve(question, dev_trace=dev_trace)
+            results_per_query = _retrieve_subqueries_concurrently(subqueries, _retrieve_one)
+
+        concepts_retrieved = sum(1 for results in results_per_query if results)
+        dev_trace.log_query_decomposition(
+            comparative, subqueries, decompose_capture.get("raw"), concepts_retrieved,
+        )
+        retrieved_chunks = _merge_multi_query_results(results_per_query)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
         pruned_chunks = prune_by_score_margin(retrieved_chunks, self._context_prune_margin)
         dev_trace.log_pruning(retrieved_chunks, pruned_chunks)

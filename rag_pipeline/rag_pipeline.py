@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,9 @@ from pydantic import ValidationError
 from rag_hybrid_search.compliance.citation_mapper import build_citations
 from rag_hybrid_search.compliance.query_router import route_query
 from rag_hybrid_search.trace import RequestTrace
+from rag_pipeline.citation_utils import chunk_text_for_doc_id
 from rag_pipeline.confidence_scorer import score_confidence
+from rag_pipeline.context_pruning import prune_by_score_margin
 from rag_pipeline.context_builder import build_context
 from rag_pipeline.generation_provider import GenerationProvider
 from rag_pipeline.citation_verifier import verify_citations
@@ -21,6 +24,7 @@ from rag_pipeline.models import (
     VerificationReport,
 )
 from rag_pipeline.prompt_builder import build_prompt
+from rag_pipeline.quote_extractor import extract_supporting_quotes
 
 _EMPTY_VERIFICATION = VerificationReport(
     total_claims=0, verified_claims=0, failed_claims=0,
@@ -97,12 +101,70 @@ def _repair_unescaped_quotes(raw: str) -> str:
     return "".join(out)
 
 
+_INLINE_CITATION_RE = re.compile(r"\[(d\d+)\]")
+
+
+def _reconcile_inline_citations(answer: str, structured_ids: set[str]) -> tuple[str, list[str], bool]:
+    """Check inline ``[dN]`` refs in the free-text answer against the citation_ids
+    the model put in its own structured claims, and rewrite the answer if they drift.
+
+    The model writes citations twice: inline in ``answer`` prose and again in
+    ``claims[].citation_ids``. Nothing enforces they agree -- the model can write
+    ``[d2]`` in prose while its claims cite ``d1``. Verification only checks
+    claims against retrieved chunks, never the prose against the claims, so this
+    drift reaches the user undetected. Structured claims are the source of truth
+    (each is individually quote-verified); on drift, inline citation tokens are
+    rewritten to match the structured set rather than rejecting the answer,
+    since the prose content itself is still valid, only its citation markers
+    are wrong.
+    """
+    inline_ids = _INLINE_CITATION_RE.findall(answer)
+    inline_set = set(inline_ids)
+    if inline_set <= structured_ids:
+        return answer, sorted(inline_set, key=lambda x: (len(x), x)), True
+
+    replacement = "".join(f"[{cid}]" for cid in sorted(structured_ids, key=lambda x: (len(x), x)))
+    fixed = _INLINE_CITATION_RE.sub("", answer)
+    fixed = re.sub(r"\s+([.,;:!?])", r"\1", fixed).rstrip() + (f" {replacement}" if replacement else "")
+    return fixed, sorted(inline_set, key=lambda x: (len(x), x)), False
+
+
+def _build_claim_diagnostics(verification: VerificationReport, context) -> list[dict]:
+    """Per-claim citation/quote diagnostics for TRACE_RAG, computed once here
+    (not inside rag_hybrid_search.trace, which must stay pipeline-agnostic).
+    """
+    rows = []
+    for i, cr in enumerate(verification.claim_results, start=1):
+        citation_id = cr.claim.citation_ids[0] if cr.claim.citation_ids else None
+        chunk_id = context.doc_id_map.get(citation_id) if citation_id else None
+        quote = cr.claim.supporting_quote or ""
+        chunk_text = chunk_text_for_doc_id(context, citation_id) if citation_id else ""
+        start = chunk_text.find(quote) if quote else -1
+        end = start + len(quote) if start != -1 else -1
+        rows.append({
+            "claim_index": i,
+            "citation_id": citation_id,
+            "chunk_id": chunk_id,
+            "quote_length": len(quote),
+            "quote_found": start != -1,
+            "quote_start_offset": start,
+            "quote_end_offset": end,
+            "crossed_boundary": cr.failure_reason == "quote_spans_multiple_chunks",
+            "failure_reason": cr.failure_reason,
+        })
+    return rows
+
+
 class RagPipeline:
-    def __init__(self, retriever, generation_provider: GenerationProvider, chunk_store=None, prompt_version: str = "v1"):
+    def __init__(
+        self, retriever, generation_provider: GenerationProvider, chunk_store=None,
+        prompt_version: str = "v2", context_prune_margin: float = 0.3,
+    ):
         self._retriever = retriever
         self._generation_provider = generation_provider
         self._chunk_store = chunk_store
         self._prompt_version = prompt_version
+        self._context_prune_margin = context_prune_margin
 
     @property
     def retriever(self):
@@ -129,6 +191,9 @@ class RagPipeline:
         else:
             retrieved_chunks, _trace = self._retriever.retrieve(question, dev_trace=dev_trace)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
+        pruned_chunks = prune_by_score_margin(retrieved_chunks, self._context_prune_margin)
+        dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
+        retrieved_chunks = pruned_chunks
 
         context = build_context(retrieved_chunks)
         prompt = build_prompt(question, context, prompt_version=self._prompt_version)
@@ -151,6 +216,7 @@ class RagPipeline:
             )
 
         draft, parse_error = self._parse_draft(raw_output)
+        draft = draft.model_copy(update={"claims": extract_supporting_quotes(draft.claims, context)})
         dev_trace.log_parse(
             success=parse_error is None,
             claims_count=len(draft.claims),
@@ -168,9 +234,15 @@ class RagPipeline:
                 citations=0.0, coverage=0.0, overall=0.0,
             )
         dev_trace.log_verification(verification)
+        dev_trace.log_claim_diagnostics(_build_claim_diagnostics(verification, context))
         dev_trace.log_confidence(confidence)
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
+        fixed_answer, inline_ids, citations_ok = _reconcile_inline_citations(draft.answer, set(citations))
+        dev_trace.log_citation_check(inline_ids, citations, citations_ok)
+        if not citations_ok:
+            draft = draft.model_copy(update={"answer": fixed_answer})
+
         structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
         documents_used = len({r.chunk.document_id for r in retrieved_chunks})
         dev_trace.log_summary(draft.answer, chunks_used=len(retrieved_chunks), documents_used=documents_used)
@@ -192,21 +264,36 @@ class RagPipeline:
         text arrives, then exactly one ``("final", RagAnswer)`` tuple once
         parsing/verification/confidence scoring complete.
         """
+        dev_trace = RequestTrace(question, {
+            "Generation": type(self._generation_provider).__name__,
+            "Max Chunks": max_chunks,
+            "Verify": verify,
+            "Prompt Version": self._prompt_version,
+            "Streaming": True,
+        })
+
         if self._chunk_store is not None:
-            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever)
+            retrieved_chunks, _trace = route_query(question, self._chunk_store, self._retriever, dev_trace=dev_trace)
         else:
-            retrieved_chunks, _trace = self._retriever.retrieve(question)
+            retrieved_chunks, _trace = self._retriever.retrieve(question, dev_trace=dev_trace)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
+        pruned_chunks = prune_by_score_margin(retrieved_chunks, self._context_prune_margin)
+        dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
+        retrieved_chunks = pruned_chunks
 
         context = build_context(retrieved_chunks)
         prompt = build_prompt(question, context, prompt_version=self._prompt_version)
+        dev_trace.log_prompt(prompt)
 
         chunks: list[str] = []
         try:
+            gen_start = time.perf_counter()
             for delta in self._generation_provider.generate_stream(prompt):
                 chunks.append(delta)
                 yield ("delta", delta)
+            gen_latency_ms = (time.perf_counter() - gen_start) * 1000
         except Exception as e:
+            dev_trace.finish()
             yield (
                 "final",
                 RagAnswer(
@@ -217,7 +304,19 @@ class RagPipeline:
             return
 
         raw_output = "".join(chunks)
+        dev_trace.log_generation(
+            type(self._generation_provider).__name__,
+            getattr(self._generation_provider, "model_name", "unknown"),
+            raw_output, gen_latency_ms,
+        )
         draft, parse_error = self._parse_draft(raw_output)
+        draft = draft.model_copy(update={"claims": extract_supporting_quotes(draft.claims, context)})
+        dev_trace.log_parse(
+            success=parse_error is None,
+            claims_count=len(draft.claims),
+            quotes_count=sum(1 for c in draft.claims if c.supporting_quote),
+            error=parse_error,
+        )
 
         if verify:
             verification = verify_citations(draft, context)
@@ -228,9 +327,19 @@ class RagPipeline:
                 retrieval=score_confidence(retrieved_chunks, _EMPTY_VERIFICATION, context).retrieval,
                 citations=0.0, coverage=0.0, overall=0.0,
             )
+        dev_trace.log_verification(verification)
+        dev_trace.log_claim_diagnostics(_build_claim_diagnostics(verification, context))
+        dev_trace.log_confidence(confidence)
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
+        fixed_answer, inline_ids, citations_ok = _reconcile_inline_citations(draft.answer, set(citations))
+        dev_trace.log_citation_check(inline_ids, citations, citations_ok)
+        if not citations_ok:
+            draft = draft.model_copy(update={"answer": fixed_answer})
         structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
+        documents_used = len({r.chunk.document_id for r in retrieved_chunks})
+        dev_trace.log_summary(draft.answer, chunks_used=len(retrieved_chunks), documents_used=documents_used)
+        dev_trace.finish()
 
         yield (
             "final",

@@ -177,6 +177,20 @@ class RequestTrace:
         for cid in dropped:
             print(f"  DROPPED   chunk={cid[:12]}  reason=not in reranker top-{len(reranked)}")
 
+    def log_pruning(self, before: list, after: list) -> None:
+        kept_ids = {r.chunk.chunk_id for r in after}
+        dropped = [r.chunk.chunk_id for r in before if r.chunk.chunk_id not in kept_ids]
+        self._data["pruning"] = {
+            "before": len(before), "after": len(after), "dropped": dropped,
+        }
+        if not self.enabled or len(dropped) == 0:
+            return
+        _section("STEP 5b -- DYNAMIC CONTEXT PRUNING")
+        _kv(**{"Before": len(before), "After": len(after), "Dropped": len(dropped)})
+        for r in before:
+            kept = r.chunk.chunk_id in kept_ids
+            print(f"  {'KEPT   ' if kept else 'PRUNED '} chunk={r.chunk.chunk_id[:12]}  rerank_score={r.rerank_score}")
+
     def log_prompt(self, prompt: str) -> None:
         approx_tokens = len(prompt) // 4
         self._data["prompt"] = {"text": prompt, "chars": len(prompt), "approx_tokens": approx_tokens}
@@ -211,7 +225,7 @@ class RequestTrace:
     def log_verification(self, verification) -> None:
         rows = [
             {"text": cr.claim.text, "citation_ids": cr.claim.citation_ids, "doc_ids_valid": cr.doc_ids_valid,
-             "quote_match_score": cr.quote_match_score, "passed": cr.passed}
+             "quote_match_score": cr.quote_match_score, "passed": cr.passed, "failure_reason": cr.failure_reason}
             for cr in verification.claim_results
         ]
         self._data["verification"] = {
@@ -224,8 +238,26 @@ class RequestTrace:
         _kv(**{"Total Claims": verification.total_claims, "Verified": verification.verified_claims, "Failed": verification.failed_claims})
         for i, row in enumerate(rows, 1):
             status = "PASS" if row["passed"] else "FAIL"
-            print(f"\n  Claim {i} [{status}]  citations={row['citation_ids']}  quote_match={row['quote_match_score']:.3f}")
+            reason = f"  reason={row['failure_reason']}" if row["failure_reason"] else ""
+            print(f"\n  Claim {i} [{status}]  citations={row['citation_ids']}  quote_match={row['quote_match_score']:.3f}{reason}")
             print(f"    {row['text'][:160]!r}")
+
+    def log_claim_diagnostics(self, rows: list[dict]) -> None:
+        self._data["claim_diagnostics"] = rows
+        if not self.enabled:
+            return
+        _section("CLAIM DIAGNOSTICS")
+        for row in rows:
+            print(f"\nCLAIM {row['claim_index']}")
+            _kv(**{
+                "citation id": row["citation_id"],
+                "chunk id": (row["chunk_id"] or "")[:12] if row["chunk_id"] else None,
+                "quote length": row["quote_length"],
+                "quote found": row["quote_found"],
+                "quote start offset": row["quote_start_offset"],
+                "quote end offset": row["quote_end_offset"],
+                "crossed boundary": "YES" if row["crossed_boundary"] else "NO",
+            })
 
     def log_confidence(self, confidence) -> None:
         self._data["confidence"] = {
@@ -239,6 +271,20 @@ class RequestTrace:
             Retrieval=f"{confidence.retrieval:.2f}", Citations=f"{confidence.citations:.2f}",
             Coverage=f"{confidence.coverage:.2f}", Overall=f"{confidence.overall:.2f}",
         )
+
+    def log_citation_check(self, inline_ids: list[str], structured_ids: list[str], passed: bool) -> None:
+        self._data["citation_check"] = {
+            "inline": inline_ids, "structured": structured_ids, "passed": passed,
+        }
+        if not self.enabled:
+            return
+        _section("INLINE CITATION CHECK")
+        _kv(
+            Inline=inline_ids or "[]", Structured=structured_ids or "[]",
+            Result="PASS" if passed else "FAILED",
+        )
+        if not passed:
+            print("Reason            : inline citation drift -- answer rewritten to match structured claims")
 
     def log_summary(self, answer: str | None, chunks_used: int, documents_used: int) -> None:
         self._data["summary"] = {

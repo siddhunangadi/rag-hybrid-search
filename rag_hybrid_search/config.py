@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     provider: Literal["nvidia", "gemini"] = "gemini"
     nvidia_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    # Overrides NvidiaProvider's own default generation model (currently the
+    # 70B model, which dominates request latency). Unset -> NvidiaProvider's
+    # built-in default, unchanged behavior.
+    generation_model: Optional[str] = None
 
     # Gates GET /debug/retrieval, which exposes raw indexed chunk text and
     # full prompts. Unset (default) -> endpoint returns 404. Set this to a
@@ -33,6 +37,15 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     rerank_top_n: int = 5
     rerank_backend: Literal["passthrough", "cross_encoder", "nvidia"] = "passthrough"
+    # After reranking, chunks scoring more than this fraction of the
+    # top-to-bottom score *range* below the top chunk are dropped before
+    # being sent to the LLM -- fewer chunks in the prompt when the reranker
+    # is confident one chunk clearly answers the question, without lowering
+    # rerank_top_n itself (which would also cap genuinely multi-hop
+    # questions that need several chunks). Only applies when rerank_score is
+    # populated (nvidia/cross_encoder backends); a no-op under
+    # PassthroughReranker, which never scores candidates.
+    context_prune_margin: float = 0.3
 
     dedup_cosine_threshold: float = 0.95
     dedup_text_similarity_threshold: float = 0.9

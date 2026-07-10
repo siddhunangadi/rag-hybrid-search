@@ -9,7 +9,7 @@ from rag_hybrid_search.compliance.regulation_models import Citation
 class Claim(BaseModel):
     text: str
     citation_ids: list[str]
-    supporting_quote: str
+    supporting_quote: Optional[str] = None
 
 
 class GenerationMetadata(BaseModel):
@@ -30,6 +30,7 @@ class ClaimResult(BaseModel):
     doc_ids_valid: bool
     quote_match_score: float
     passed: bool
+    failure_reason: Optional[str] = None
 
 
 class VerificationReport(BaseModel):

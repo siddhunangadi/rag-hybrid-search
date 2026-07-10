@@ -1,6 +1,7 @@
 import re
 from difflib import SequenceMatcher
 
+from rag_pipeline.citation_utils import chunk_text_for_doc_id
 from rag_pipeline.models import (
     ClaimResult,
     PromptContext,
@@ -9,6 +10,8 @@ from rag_pipeline.models import (
 )
 
 QUOTE_MATCH_THRESHOLD = 0.80
+
+_CITATION_MARKER_RE = re.compile(r"\[d\d+\]")
 
 
 def verify_citations(
@@ -27,10 +30,22 @@ def verify_citations(
                 if citation_id not in context.doc_id_map:
                     hallucinated_doc_ids.append(citation_id)
 
+        # A quote that still contains a literal "[dN]" marker is proof the
+        # model (or an old prompt version) copied text spanning a citation
+        # boundary without even stripping the marker -- fail immediately,
+        # no need to score it.
+        if doc_ids_valid and claim.supporting_quote and _CITATION_MARKER_RE.search(claim.supporting_quote):
+            claim_results.append(ClaimResult(
+                claim=claim, doc_ids_valid=doc_ids_valid, quote_match_score=0.0,
+                passed=False, failure_reason="quote_contains_citation_marker",
+            ))
+            missing_quotes.append(claim.supporting_quote)
+            continue
+
         best_quote_score = 0.0
         if doc_ids_valid:
             for citation_id in claim.citation_ids:
-                chunk_text = _chunk_text_for_doc_id(context, citation_id)
+                chunk_text = chunk_text_for_doc_id(context, citation_id)
                 score = _quote_containment_score(claim.supporting_quote, chunk_text)
                 best_quote_score = max(best_quote_score, score)
 
@@ -43,7 +58,7 @@ def verify_citations(
             for doc_id in context.doc_id_map:
                 if doc_id in claim.citation_ids:
                     continue
-                chunk_text = _chunk_text_for_doc_id(context, doc_id)
+                chunk_text = chunk_text_for_doc_id(context, doc_id)
                 score = _quote_containment_score(claim.supporting_quote, chunk_text)
                 if score > best_doc_score:
                     best_doc_id, best_doc_score = doc_id, score
@@ -52,8 +67,31 @@ def verify_citations(
                 best_quote_score = best_doc_score
 
         passed = doc_ids_valid and best_quote_score >= QUOTE_MATCH_THRESHOLD
-        if doc_ids_valid and best_quote_score < QUOTE_MATCH_THRESHOLD:
+
+        failure_reason = None
+        if not doc_ids_valid:
+            failure_reason = "hallucinated_citation_id"
+        elif not passed:
             missing_quotes.append(claim.supporting_quote)
+            # A quote that scores low against its own cited chunk but scores
+            # high against all cited-context chunks concatenated (markers
+            # stripped, chunks joined with a plain space) is the signature
+            # of a quote that spans multiple chunks: it exists in the
+            # document as a whole, just split across a chunk boundary.
+            # Using context.text directly would miss this -- the literal
+            # "[dN]" marker between chunks breaks contiguous matching right
+            # at the boundary, making a genuinely cross-chunk quote score
+            # just as low against the whole raw context as a true
+            # hallucination would.
+            all_chunks_concat = " ".join(
+                chunk_text_for_doc_id(context, doc_id) for doc_id in context.doc_id_map
+            )
+            whole_context_score = _quote_containment_score(claim.supporting_quote, all_chunks_concat)
+            failure_reason = (
+                "quote_spans_multiple_chunks"
+                if whole_context_score >= QUOTE_MATCH_THRESHOLD
+                else "quote_not_found"
+            )
 
         claim_results.append(
             ClaimResult(
@@ -61,6 +99,7 @@ def verify_citations(
                 doc_ids_valid=doc_ids_valid,
                 quote_match_score=best_quote_score,
                 passed=passed,
+                failure_reason=failure_reason,
             )
         )
 
@@ -98,30 +137,3 @@ def _normalize_whitespace(text: str) -> str:
     """Collapse PDF line-wrap newlines/runs of whitespace to a single space
     so verbatim quotes match chunk text regardless of source line breaks."""
     return re.sub(r"\s+", " ", text).strip()
-
-
-def _chunk_text_for_doc_id(context: PromptContext, doc_id: str) -> str:
-    """Extract this doc's chunk text from the prompt context.
-
-    context_builder joins chunks with '\\n\\n', so naively splitting on the
-    first '\\n\\n' after the marker assumes that's always the chunk
-    boundary. But a chunk's own text can legitimately contain an internal
-    blank line (e.g. 'prose\\n\\ntable rows' from the PDF table renderer),
-    which would truncate it early. Instead, find the true boundary: the
-    start of whichever other doc's marker comes next in the text.
-    """
-    marker = f"[{doc_id}]"
-    start_idx = context.text.find(marker)
-    if start_idx == -1:
-        return ""
-    start = start_idx + len(marker)
-
-    end = len(context.text)
-    for other_id in context.doc_id_map:
-        if other_id == doc_id:
-            continue
-        pos = context.text.find(f"\n\n[{other_id}]", start)
-        if pos != -1 and pos < end:
-            end = pos
-
-    return context.text[start:end].strip()

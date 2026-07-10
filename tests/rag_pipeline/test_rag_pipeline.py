@@ -50,6 +50,39 @@ def test_answer_end_to_end_with_mock_provider():
     assert result.confidence.overall > 0.0
 
 
+def test_multi_citation_claim_from_model_is_narrowed_and_verified_safely():
+    """Regression test for the production bug: even if the model ignores
+    the v2 prompt's "one citation per claim" instruction and emits a claim
+    citing two chunks, the backend narrows it to one citation and extracts
+    the supporting_quote from that single chunk only -- so the final,
+    verified answer can never carry a quote spanning both chunks, no
+    matter what the model returns."""
+    chunks = [
+        make_retrieved_chunk("c1", "The most critical insight is that granularity dominates."),
+        make_retrieved_chunk("c2", "While RQ2 establishes that structural detection is effective.", final_rank=2),
+    ]
+    canned = json.dumps({
+        "answer": "Granularity dominates and RQ2 establishes detection is effective [d1].",
+        "claims": [{
+            "text": "Granularity dominates model effects, and RQ2 establishes structural detection is effective.",
+            "citation_ids": ["d1", "d2"],
+        }],
+    })
+    pipeline = RagPipeline(FakeRetriever(chunks), MockProvider(canned_json=canned))
+
+    result = pipeline.answer("How do RQ1 and RQ2 relate?")
+
+    assert result.error is None
+    assert result.verification.total_claims == 1
+    # Narrowed to exactly one citation -- never both.
+    assert result.verification.claim_results[0].claim.citation_ids == ["d1"]
+    quote = result.verification.claim_results[0].claim.supporting_quote
+    assert "granularity dominates" in quote.lower()
+    assert "RQ2" not in quote
+    # Backend-extracted from one real chunk, so it always verifies.
+    assert result.verification.claim_results[0].passed is True
+
+
 def test_answer_with_verify_false_skips_verification():
     chunks = [make_retrieved_chunk("c1", "Employees get 20 days of paid leave.")]
     canned = json.dumps({"answer": "Answer.", "claims": []})
@@ -74,19 +107,18 @@ def test_generation_provider_exception_is_caught_not_raised():
     assert result.confidence.overall == 0.0
 
 
-def test_supporting_quote_with_unescaped_inner_quotes_is_repaired():
-    """The model is instructed to copy supporting_quote verbatim from the
-    source text. When that source text itself contains a quoted phrase
-    (e.g. the paper says the "GPT-3.5 trap"), the model sometimes copies
-    the inner quote marks literally without JSON-escaping them, producing
-    invalid JSON. This must be repaired rather than degrading the whole
-    answer to a raw-text fallback."""
+def test_unescaped_inner_quotes_in_answer_are_repaired():
+    """The model occasionally copies a quoted phrase from the source text
+    into the "answer" field (e.g. the paper says the "GPT-3.5 trap")
+    without JSON-escaping the inner quote marks, producing invalid JSON.
+    This must be repaired rather than degrading the whole answer to a
+    raw-text fallback. (supporting_quote is backend-extracted now, not
+    model-provided -- see test_quote_extractor.py for that coverage.)"""
     chunks = [make_retrieved_chunk("c1", "some text")]
     broken_json = (
         '{"answer": "Explained by the "GPT-3.5 trap" [d1].", '
         '"claims": [{"text": "GPT-3.5 detectability is an anomaly.", '
-        '"citation_ids": ["d1"], '
-        '"supporting_quote": "explains the "GPT-3.5 trap": detectors overfit."}]}'
+        '"citation_ids": ["d1"]}]}'
     )
     pipeline = RagPipeline(
         FakeRetriever(chunks), MockProvider(canned_json=broken_json)
@@ -96,7 +128,7 @@ def test_supporting_quote_with_unescaped_inner_quotes_is_repaired():
 
     assert result.error is None
     assert result.verification.total_claims == 1
-    assert "GPT-3.5 trap" in result.verification.claim_results[0].claim.supporting_quote
+    assert "GPT-3.5 trap" in result.answer
 
 
 def test_malformed_json_from_provider_degrades_gracefully():

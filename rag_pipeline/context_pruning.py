@@ -13,9 +13,11 @@ is scale- and sign-invariant across all three backends.
 from rag_hybrid_search.models import RetrievedChunk
 
 
-def prune_by_score_margin(chunks: list[RetrievedChunk], margin: float) -> list[RetrievedChunk]:
+def prune_by_score_margin(chunks: list[RetrievedChunk], margin: float, min_keep: int = 1) -> list[RetrievedChunk]:
     """Drop chunks whose rerank_score falls more than `margin` of the
-    top-to-bottom score range below the top chunk.
+    top-to-bottom score range below the top chunk, but never prune below
+    `min_keep` chunks -- comparative questions need multiple supporting
+    chunks even when the reranker is confident about a single top result.
 
     No-op (returns chunks unchanged) when: fewer than 2 chunks, any chunk is
     missing rerank_score (PassthroughReranker never scores candidates -- no
@@ -34,4 +36,7 @@ def prune_by_score_margin(chunks: list[RetrievedChunk], margin: float) -> list[R
         return chunks
 
     threshold = top_score - margin * score_range
-    return [c for c in chunks if c.rerank_score >= threshold]
+    pruned = [c for c in chunks if c.rerank_score >= threshold]
+    if len(pruned) < min_keep:
+        return chunks[:min_keep]
+    return pruned

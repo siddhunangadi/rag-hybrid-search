@@ -294,7 +294,9 @@ class RagPipeline:
         )
         retrieved_chunks = _merge_multi_query_results(results_per_query)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
-        pruned_chunks = prune_by_score_margin(retrieved_chunks, self._context_prune_margin)
+        pruned_chunks = prune_by_score_margin(
+            retrieved_chunks, self._context_prune_margin, min_keep=3 if comparative else 1,
+        )
         dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
         retrieved_chunks = pruned_chunks
 
@@ -403,7 +405,9 @@ class RagPipeline:
         )
         retrieved_chunks = _merge_multi_query_results(results_per_query)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
-        pruned_chunks = prune_by_score_margin(retrieved_chunks, self._context_prune_margin)
+        pruned_chunks = prune_by_score_margin(
+            retrieved_chunks, self._context_prune_margin, min_keep=3 if comparative else 1,
+        )
         dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
         retrieved_chunks = pruned_chunks
 

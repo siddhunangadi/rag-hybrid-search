@@ -413,3 +413,40 @@ def test_retrieve_subqueries_concurrently_isolates_one_failure():
     results = _retrieve_subqueries_concurrently(["good1", "bad", "good2"], flaky_retrieve)
 
     assert results == [["good1"], [], ["good2"]]
+
+
+def test_comparative_question_keeps_multiple_chunks_after_pruning():
+    """Regression test for the production bug: a comparative question
+    whose reranker gave one chunk a dominant score used to get pruned down
+    to 1 chunk, starving the generator of evidence for the other concepts.
+    min_keep=3 for comparative questions prevents that collapse."""
+    chunks_by_query = {
+        "RQ1 findings": [make_retrieved_chunk("rq1", "RQ1: granularity matters.", rerank_score=5.0)],
+        "RQ2 findings": [make_retrieved_chunk("rq2", "RQ2: class-level differs.", rerank_score=0.2, final_rank=2)],
+        "RQ3 findings": [make_retrieved_chunk("rq3", "RQ3: features overlap.", rerank_score=0.1, final_rank=3)],
+    }
+    retriever = MultiQueryFakeRetriever(chunks_by_query)
+    decompose_canned = json.dumps(["RQ1 findings", "RQ2 findings", "RQ3 findings"])
+    answer_canned = json.dumps({
+        "answer": "RQ1 shows granularity matters [d1], RQ2 shows class-level differs [d2], RQ3 shows features overlap [d3].",
+        "claims": [
+            {"text": "Granularity matters.", "citation_ids": ["d1"]},
+            {"text": "Class-level differs.", "citation_ids": ["d2"]},
+            {"text": "Features overlap.", "citation_ids": ["d3"]},
+        ],
+    })
+    provider = MockProvider(canned_json=answer_canned)
+    calls = {"n": 0}
+    original_generate = provider.generate
+
+    def generate(prompt, **kwargs):
+        calls["n"] += 1
+        return decompose_canned if calls["n"] == 1 else original_generate(prompt, **kwargs)
+
+    provider.generate = generate
+
+    pipeline = RagPipeline(retriever, provider)
+    result = pipeline.answer("How do RQ1, RQ2, and RQ3 findings differ?")
+
+    assert result.error is None
+    assert {c for c in result.citations} == {"d1", "d2", "d3"}

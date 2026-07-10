@@ -80,6 +80,36 @@ def test_index_reports_per_document_failure_without_500(client):
     assert statuses["bad.unsupported"]["error"] is not None
 
 
+def test_index_filename_with_path_traversal_cannot_escape_uploads_dir(client, tmp_path):
+    response = client.post(
+        "/index",
+        json={
+            "documents": [
+                {"filename": "../../evil.md", "content": "attacker controlled content"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    # data_dir is tmp_path/"data", uploads live under it; "../../evil.md"
+    # from the uploads dir would land directly in tmp_path if unsanitized.
+    assert not (tmp_path / "evil.md").exists()
+    escaped = [p for p in tmp_path.rglob("evil.md") if "uploads" not in p.parts]
+    assert escaped == []
+
+
+def test_upload_filename_with_path_traversal_cannot_escape_uploads_dir(client, tmp_path):
+    response = client.post(
+        "/upload",
+        files=[("files", ("../../evil.txt", b"attacker controlled content", "text/plain"))],
+    )
+
+    assert response.status_code == 200
+    assert not (tmp_path / "evil.txt").exists()
+    escaped = [p for p in tmp_path.rglob("evil.txt") if "uploads" not in p.parts]
+    assert escaped == []
+
+
 def test_index_rejects_empty_document_list(client):
     response = client.post("/index", json={"documents": []})
 

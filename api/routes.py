@@ -63,6 +63,19 @@ _LOADERS_BY_SUFFIX: dict[str, Loader] = {
 router = APIRouter()
 
 
+def _safe_filename(filename: str) -> str:
+    """Reduce a client-supplied filename to a bare basename.
+
+    Uploaded filenames are attacker-controlled; joining them onto
+    uploads_dir unsanitized would let "../../x" write outside the uploads
+    directory. Rejects names that reduce to nothing (e.g. "..", "/").
+    """
+    name = Path(filename).name
+    if not name or name in (".", ".."):
+        raise ValueError(f"invalid filename {filename!r}")
+    return name
+
+
 def _loader_for_filename(filename: str) -> Loader:
     """Pick a loader by file extension; raise ValueError for unsupported types."""
     suffix = Path(filename).suffix.lower()
@@ -89,11 +102,12 @@ def _chunker_for_document_type(document_type: DocumentTypeParam, document_title:
 def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
     """Write a single uploaded document to disk and ingest it, catching per-item errors."""
     try:
-        loader = _loader_for_filename(document.filename)
-        dest_path = container.uploads_dir / document.filename
+        safe_name = _safe_filename(document.filename)
+        loader = _loader_for_filename(safe_name)
+        dest_path = container.uploads_dir / safe_name
         dest_path.write_text(document.content, encoding="utf-8")
 
-        chunker = _chunker_for_document_type(document.document_type, document.filename)
+        chunker = _chunker_for_document_type(document.document_type, safe_name)
         ingestion_pipeline = container.build_ingestion_pipeline(loader, chunker=chunker)
         status = ingestion_pipeline.ingest(str(dest_path))
         return IndexResult(
@@ -113,11 +127,12 @@ def _ingest_bytes(
     on the background ingestion worker thread (see api/jobs.py, /upload/async).
     """
     try:
-        loader = _loader_for_filename(filename)
-        dest_path = container.uploads_dir / filename
+        safe_name = _safe_filename(filename)
+        loader = _loader_for_filename(safe_name)
+        dest_path = container.uploads_dir / safe_name
         dest_path.write_bytes(contents)
 
-        chunker = _chunker_for_document_type(document_type, filename)
+        chunker = _chunker_for_document_type(document_type, safe_name)
         ingestion_pipeline = container.build_ingestion_pipeline(loader, chunker=chunker)
         status = ingestion_pipeline.ingest(str(dest_path))
         return IndexResult(

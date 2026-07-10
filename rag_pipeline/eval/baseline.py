@@ -34,11 +34,15 @@ def save_baseline(baseline: Baseline, name: str, base_dir: str | Path = DEFAULT_
     # that later fails as "corrupt". Same-directory temp file so os.replace
     # stays on one filesystem (rename is atomic only within a filesystem).
     tmp_path = path.with_suffix(".json.tmp")
-    with open(tmp_path, "w") as f:
-        f.write(baseline.model_dump_json(indent=2))
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, path)
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(baseline.model_dump_json(indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return path
 
 

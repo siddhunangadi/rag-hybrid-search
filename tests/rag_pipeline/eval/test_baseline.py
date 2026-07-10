@@ -72,3 +72,24 @@ def test_question_set_hash_is_stable_and_content_sensitive(tmp_path):
 
 def test_baseline_path_maps_name(tmp_path):
     assert baseline_path("bm25", base_dir=tmp_path) == tmp_path / "bm25.json"
+
+
+def test_save_baseline_cleans_up_temp_file_on_write_failure(tmp_path, monkeypatch):
+    """Verify that orphaned .tmp files are cleaned up when write fails."""
+    import os
+
+    # Monkeypatch os.fsync to raise an exception
+    original_fsync = os.fsync
+    def failing_fsync(fd):
+        raise OSError("Simulated disk full error")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+
+    # Attempt to save baseline; this should raise
+    with pytest.raises(OSError, match="Simulated disk full error"):
+        save_baseline(_baseline(), "main", base_dir=tmp_path)
+
+    # Verify the temp file was cleaned up
+    assert list(tmp_path.glob("*.tmp")) == []
+    # Verify the main file was not created (since write failed)
+    assert not (tmp_path / "main.json").exists()

@@ -51,3 +51,46 @@ def test_log_rerank_prints_retrieval_budget_block_when_enabled(monkeypatch, caps
     assert "Dense candidates" in out
     assert "Saved" in out
     assert "9 reranker evaluations" in out
+
+
+def test_log_verification_computes_ratio_and_prints_summary(monkeypatch, capsys):
+    monkeypatch.setenv("TRACE_RAG", "true")
+    trace = RequestTrace("question", {})
+
+    class FakeClaim:
+        text = "claim text"
+        citation_ids = ["d1"]
+
+    class FakeClaimResult:
+        def __init__(self, passed):
+            self.claim = FakeClaim()
+            self.doc_ids_valid = True
+            self.quote_match_score = 1.0
+            self.passed = passed
+            self.failure_reason = None if passed else "quote_not_found"
+
+    class FakeVerification:
+        total_claims = 4
+        verified_claims = 3
+        failed_claims = 1
+        claim_results = [FakeClaimResult(True), FakeClaimResult(True), FakeClaimResult(True), FakeClaimResult(False)]
+
+    trace.log_verification(FakeVerification())
+
+    assert trace._data["verification"]["verification_ratio"] == pytest.approx(0.75)
+    out = capsys.readouterr().out
+    assert "VERIFICATION SUMMARY" in out
+    assert "75%" in out
+
+
+def test_log_verification_ratio_zero_when_no_claims():
+    trace = RequestTrace("question", {})
+
+    class FakeVerification:
+        total_claims = 0
+        verified_claims = 0
+        failed_claims = 0
+        claim_results = []
+
+    trace.log_verification(FakeVerification())
+    assert trace._data["verification"]["verification_ratio"] == 0.0

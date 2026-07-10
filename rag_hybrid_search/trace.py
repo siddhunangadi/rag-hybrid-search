@@ -247,9 +247,13 @@ class RequestTrace:
              "quote_match_score": cr.quote_match_score, "passed": cr.passed, "failure_reason": cr.failure_reason}
             for cr in verification.claim_results
         ]
+        ratio = (
+            verification.verified_claims / verification.total_claims
+            if verification.total_claims else 0.0
+        )
         self._data["verification"] = {
             "total": verification.total_claims, "verified": verification.verified_claims,
-            "failed": verification.failed_claims, "claims": rows,
+            "failed": verification.failed_claims, "verification_ratio": ratio, "claims": rows,
         }
         if not self.enabled:
             return
@@ -260,6 +264,13 @@ class RequestTrace:
             reason = f"  reason={row['failure_reason']}" if row["failure_reason"] else ""
             print(f"\n  Claim {i} [{status}]  citations={row['citation_ids']}  quote_match={row['quote_match_score']:.3f}{reason}")
             print(f"    {row['text'][:160]!r}")
+        _section("VERIFICATION SUMMARY")
+        _kv(**{
+            "Claims generated": verification.total_claims,
+            "Claims verified": verification.verified_claims,
+            "Claims failed": verification.failed_claims,
+            "Verification Ratio": f"{ratio * 100:.0f}%",
+        })
 
     def log_claim_diagnostics(self, rows: list[dict]) -> None:
         self._data["claim_diagnostics"] = rows

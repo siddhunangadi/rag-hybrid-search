@@ -69,3 +69,67 @@ def test_write_report_produces_json_and_html(tmp_path):
     html = html_path.read_text()
     assert "benchmark-v1" in html
     assert "citation_precision" in html.lower() or "citation precision" in html.lower()
+
+
+def test_build_summary_returns_none_for_empty_records():
+    """Empty records list should produce None values, not 0.0, for all metrics."""
+    summary = build_summary([])
+
+    assert summary["objective"]["aggregate"]["citation_precision"] is None
+    assert summary["objective"]["aggregate"]["citation_recall"] is None
+    assert summary["objective"]["aggregate"]["citation_f1"] is None
+    assert summary["objective"]["aggregate"]["coverage"] is None
+    assert summary["objective"]["aggregate"]["latency_ms"] is None
+    assert summary["objective"]["aggregate"]["verification_pass_rate"] is None
+
+    assert summary["subjective"]["aggregate"]["accuracy"] is None
+    assert summary["subjective"]["aggregate"]["hallucination_rate"] is None
+
+
+def test_build_summary_returns_none_for_all_error_records():
+    """All-error records should produce None values, not 0.0, since no success records exist."""
+    records = [
+        {"id": "q1", "category": "factual", "status": "error", "error_type": "timeout",
+         "objective_metrics": None, "judge": None},
+        {"id": "q2", "category": "factual", "status": "error", "error_type": "generation_fail",
+         "objective_metrics": None, "judge": None},
+    ]
+
+    summary = build_summary(records)
+
+    # Aggregate should have None for all metrics (no success records to average)
+    assert summary["objective"]["aggregate"]["citation_precision"] is None
+    assert summary["subjective"]["aggregate"]["accuracy"] is None
+
+    # Category breakdown for "factual" should also have None (no success records in that category)
+    assert summary["objective"]["by_category"]["factual"]["citation_precision"] is None
+    assert summary["subjective"]["by_category"]["factual"]["accuracy"] is None
+
+    # Error tracking should still work
+    assert summary["error_count"] == 2
+    assert summary["total_questions"] == 2
+
+
+def test_write_report_html_contains_error_count_and_total_questions(tmp_path):
+    """HTML report should display error_count and total_questions for human review."""
+    records = [
+        _record("factual", "CORRECT"),
+        {"id": "q2", "category": "factual", "status": "error", "error_type": "timeout",
+         "objective_metrics": None, "judge": None},
+    ]
+    metadata = {
+        "report_version": "1", "timestamp": "2026-07-10T00:00:00Z", "git_commit": "abc123",
+        "package_version": "0.1.0", "generation_model": "mock", "judge_model": "mock",
+        "prompt_version": "v2", "judge_prompt_version": "v1",
+        "settings": {"dense_k": 10}, "corpus_version": "unknown",
+        "dataset": {"name": "benchmark-v1", "version": "1.0.0"},
+    }
+
+    json_path, html_path = write_report(records, metadata, tmp_path)
+
+    html = html_path.read_text()
+
+    # HTML should contain the error count and total questions
+    # This allows a human skimming the report to see "1 / 2 questions succeeded" or similar
+    assert "1" in html  # error_count
+    assert "2" in html  # total_questions (or should appear near error info)

@@ -196,6 +196,7 @@ def build_container(settings: Settings | None = None) -> Container:
         dense_k=settings.dense_k,
         sparse_k=settings.sparse_k,
         rerank_top_n=settings.rerank_top_n,
+        rerank_fused_top_n=settings.rerank_fused_top_n,
     )
     rag_pipeline = RagPipeline(
         retriever, generation_provider, chunk_store=chunk_store,

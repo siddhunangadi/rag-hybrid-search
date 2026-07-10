@@ -22,6 +22,7 @@ class HybridRetriever:
         dense_k: int,
         sparse_k: int,
         rerank_top_n: int,
+        rerank_fused_top_n: int,
     ):
         self._dense_retriever = dense_retriever
         self._sparse_retriever = sparse_retriever
@@ -32,6 +33,7 @@ class HybridRetriever:
         self._dense_k = dense_k
         self._sparse_k = sparse_k
         self._rerank_top_n = rerank_top_n
+        self._rerank_fused_top_n = rerank_fused_top_n
 
     @property
     def dense_retriever(self) -> DenseRetriever:
@@ -60,6 +62,10 @@ class HybridRetriever:
     @property
     def rrf_k(self) -> int:
         return self._rrf_k
+
+    @property
+    def rerank_fused_top_n(self) -> int:
+        return self._rerank_fused_top_n
 
     def retrieve(self, query: str, dev_trace=None) -> tuple[list[RetrievedChunk], RetrievalTrace]:
         logger.info("retrieve: start query=%r", query)
@@ -108,15 +114,17 @@ class HybridRetriever:
             )
 
         start = time.perf_counter()
-        reranked = self._rerank_provider.rerank(query, fused, top_n=self._rerank_top_n)
+        budgeted = fused[: self._rerank_fused_top_n]
+        reranked = self._rerank_provider.rerank(query, budgeted, top_n=self._rerank_top_n)
         trace.rerank_latency_ms = (time.perf_counter() - start) * 1000
         logger.info(
-            "retrieve: rerank (top_n=%d) via provider=%s returned %d results latency_ms=%.1f",
-            self._rerank_top_n, type(self._rerank_provider).__name__, len(reranked), trace.rerank_latency_ms,
+            "retrieve: rerank (top_n=%d, fused_budget=%d) via provider=%s returned %d results latency_ms=%.1f",
+            self._rerank_top_n, self._rerank_fused_top_n, type(self._rerank_provider).__name__,
+            len(reranked), trace.rerank_latency_ms,
         )
         logger.debug("retrieve: reranked results %s", [(r.chunk.chunk_id, r.rerank_score, r.final_rank) for r in reranked])
         logger.info("retrieve: done total_latency_ms=%.1f", trace.total_latency_ms)
         if dev_trace is not None:
-            dev_trace.log_rerank(type(self._rerank_provider).__name__, fused, reranked, trace.rerank_latency_ms)
+            dev_trace.log_rerank(type(self._rerank_provider).__name__, budgeted, reranked, trace.rerank_latency_ms)
 
         return reranked, trace

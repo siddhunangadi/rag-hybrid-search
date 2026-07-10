@@ -53,6 +53,7 @@ def system(tmp_path):
         dense_k=10,
         sparse_k=10,
         rerank_top_n=3,
+        rerank_fused_top_n=20,
     )
     return retriever
 

@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     rrf_sparse_weight: float = 0.3
     rrf_k: int = 60
     rerank_top_n: int = 5
+    # Fused RRF output is truncated to this many top-scored candidates
+    # before being sent to the reranker -- the reranker is the dominant
+    # latency cost, and most fused candidates never survive rerank_top_n
+    # anyway. dense_k/sparse_k stay wide for RRF diversity; only what
+    # reaches the expensive reranker call is trimmed.
+    rerank_fused_top_n: int = 8
     rerank_backend: Literal["passthrough", "cross_encoder", "nvidia"] = "passthrough"
     # After reranking, chunks scoring more than this fraction of the
     # top-to-bottom score *range* below the top chunk are dropped before
@@ -64,6 +70,10 @@ class Settings(BaseSettings):
             )
         if self.rerank_top_n > self.dense_k + self.sparse_k:
             raise ValueError("rerank_top_n cannot exceed dense_k + sparse_k")
+        if self.rerank_fused_top_n > self.dense_k + self.sparse_k:
+            raise ValueError("rerank_fused_top_n cannot exceed dense_k + sparse_k")
+        if self.rerank_top_n > self.rerank_fused_top_n:
+            raise ValueError("rerank_top_n cannot exceed rerank_fused_top_n")
         return self
 
 

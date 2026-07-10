@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from rag_pipeline.models import (
     Claim,
     ClaimResult,
+    CitationStatus,
     ConfidenceScores,
     GenerationMetadata,
     PromptContext,
@@ -96,3 +97,19 @@ def test_prompt_context_roundtrip():
 def test_claim_requires_citation_ids_list():
     with pytest.raises(ValidationError):
         Claim(text="x", citation_ids="not-a-list", supporting_quote="x")
+
+
+def test_citation_status_values():
+    assert CitationStatus.OK == "ok"
+    assert CitationStatus.INLINE_DRIFT == "inline_drift"
+    assert CitationStatus.VERIFICATION_FAILED == "verification_failed"
+
+
+def test_rag_answer_defaults_to_ok_citation_status():
+    report = VerificationReport(
+        total_claims=0, verified_claims=0, failed_claims=0,
+        hallucinated_doc_ids=[], missing_quotes=[], claim_results=[],
+    )
+    scores = ConfidenceScores(retrieval=0.0, citations=0.0, coverage=0.0, overall=0.0)
+    answer = RagAnswer(answer=None, citations=[], confidence=scores, verification=report)
+    assert answer.citation_status == CitationStatus.OK

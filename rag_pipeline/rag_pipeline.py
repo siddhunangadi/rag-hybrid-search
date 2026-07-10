@@ -17,6 +17,7 @@ from rag_pipeline.generation_provider import GenerationProvider
 from rag_pipeline.citation_verifier import verify_citations
 from rag_pipeline.models import (
     Claim,
+    CitationStatus,
     ConfidenceScores,
     GenerationMetadata,
     RagAnswer,
@@ -104,29 +105,19 @@ def _repair_unescaped_quotes(raw: str) -> str:
 _INLINE_CITATION_RE = re.compile(r"\[(d\d+)\]")
 
 
-def _reconcile_inline_citations(answer: str, structured_ids: set[str]) -> tuple[str, list[str], bool]:
-    """Check inline ``[dN]`` refs in the free-text answer against the citation_ids
-    the model put in its own structured claims, and rewrite the answer if they drift.
+def _inline_citation_drift(answer: str, structured_ids: set[str]) -> tuple[list[str], bool]:
+    """Detect drift between inline ``[dN]`` refs in the free-text answer and
+    the citation_ids the model put in its own structured claims.
 
-    The model writes citations twice: inline in ``answer`` prose and again in
-    ``claims[].citation_ids``. Nothing enforces they agree -- the model can write
-    ``[d2]`` in prose while its claims cite ``d1``. Verification only checks
-    claims against retrieved chunks, never the prose against the claims, so this
-    drift reaches the user undetected. Structured claims are the source of truth
-    (each is individually quote-verified); on drift, inline citation tokens are
-    rewritten to match the structured set rather than rejecting the answer,
-    since the prose content itself is still valid, only its citation markers
-    are wrong.
+    The model writes citations twice: inline in ``answer`` prose and again
+    in ``claims[].citation_ids``. Nothing enforces they agree. This only
+    detects and reports drift -- it never rewrites the answer text. The
+    pipeline validates what the model produced; it does not repair it.
     """
     inline_ids = _INLINE_CITATION_RE.findall(answer)
     inline_set = set(inline_ids)
-    if inline_set <= structured_ids:
-        return answer, sorted(inline_set, key=lambda x: (len(x), x)), True
-
-    replacement = "".join(f"[{cid}]" for cid in sorted(structured_ids, key=lambda x: (len(x), x)))
-    fixed = _INLINE_CITATION_RE.sub("", answer)
-    fixed = re.sub(r"\s+([.,;:!?])", r"\1", fixed).rstrip() + (f" {replacement}" if replacement else "")
-    return fixed, sorted(inline_set, key=lambda x: (len(x), x)), False
+    ok = inline_set <= structured_ids
+    return sorted(inline_set, key=lambda x: (len(x), x)), ok
 
 
 def _build_claim_diagnostics(verification: VerificationReport, context) -> list[dict]:
@@ -238,10 +229,14 @@ class RagPipeline:
         dev_trace.log_confidence(confidence)
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
-        fixed_answer, inline_ids, citations_ok = _reconcile_inline_citations(draft.answer, set(citations))
-        dev_trace.log_citation_check(inline_ids, citations, citations_ok)
-        if not citations_ok:
-            draft = draft.model_copy(update={"answer": fixed_answer})
+        inline_ids, citations_ok = _inline_citation_drift(draft.answer, set(citations))
+
+        citation_status = CitationStatus.OK
+        if any(not cr.passed for cr in verification.claim_results):
+            citation_status = CitationStatus.VERIFICATION_FAILED
+        elif not citations_ok:
+            citation_status = CitationStatus.INLINE_DRIFT
+        dev_trace.log_citation_check(inline_ids, citations, citation_status.value)
 
         structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
         documents_used = len({r.chunk.document_id for r in retrieved_chunks})
@@ -250,7 +245,8 @@ class RagPipeline:
 
         return RagAnswer(
             answer=draft.answer, citations=citations, structured_citations=structured_citations,
-            confidence=confidence, verification=verification, error=parse_error,
+            confidence=confidence, verification=verification, citation_status=citation_status,
+            error=parse_error,
         )
 
     def answer_stream(self, question: str, max_chunks: int = 5, verify: bool = True):
@@ -332,10 +328,15 @@ class RagPipeline:
         dev_trace.log_confidence(confidence)
 
         citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
-        fixed_answer, inline_ids, citations_ok = _reconcile_inline_citations(draft.answer, set(citations))
-        dev_trace.log_citation_check(inline_ids, citations, citations_ok)
-        if not citations_ok:
-            draft = draft.model_copy(update={"answer": fixed_answer})
+        inline_ids, citations_ok = _inline_citation_drift(draft.answer, set(citations))
+
+        citation_status = CitationStatus.OK
+        if any(not cr.passed for cr in verification.claim_results):
+            citation_status = CitationStatus.VERIFICATION_FAILED
+        elif not citations_ok:
+            citation_status = CitationStatus.INLINE_DRIFT
+        dev_trace.log_citation_check(inline_ids, citations, citation_status.value)
+
         structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
         documents_used = len({r.chunk.document_id for r in retrieved_chunks})
         dev_trace.log_summary(draft.answer, chunks_used=len(retrieved_chunks), documents_used=documents_used)
@@ -345,7 +346,8 @@ class RagPipeline:
             "final",
             RagAnswer(
                 answer=draft.answer, citations=citations, structured_citations=structured_citations,
-                confidence=confidence, verification=verification, error=parse_error,
+                confidence=confidence, verification=verification, citation_status=citation_status,
+                error=parse_error,
             ),
         )
 

@@ -291,19 +291,16 @@ class RequestTrace:
             Coverage=f"{confidence.coverage:.2f}", Overall=f"{confidence.overall:.2f}",
         )
 
-    def log_citation_check(self, inline_ids: list[str], structured_ids: list[str], passed: bool) -> None:
+    def log_citation_check(self, inline_ids: list[str], structured_ids: list[str], status: str) -> None:
         self._data["citation_check"] = {
-            "inline": inline_ids, "structured": structured_ids, "passed": passed,
+            "inline": inline_ids, "structured": structured_ids, "status": status,
         }
         if not self.enabled:
             return
-        _section("INLINE CITATION CHECK")
-        _kv(
-            Inline=inline_ids or "[]", Structured=structured_ids or "[]",
-            Result="PASS" if passed else "FAILED",
-        )
-        if not passed:
-            print("Reason            : inline citation drift -- answer rewritten to match structured claims")
+        _section("CITATION STATUS")
+        _kv(Status=status, Inline=inline_ids or "[]", Structured=structured_ids or "[]")
+        if status != "ok":
+            print("Action            : no mutation performed")
 
     def log_summary(self, answer: str | None, chunks_used: int, documents_used: int) -> None:
         self._data["summary"] = {

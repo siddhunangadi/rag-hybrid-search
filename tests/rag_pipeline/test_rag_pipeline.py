@@ -2,6 +2,7 @@ import json
 
 from rag_hybrid_search.models import Chunk, RetrievalTrace, RetrievedChunk
 from rag_pipeline.generation_provider import MockProvider
+from rag_pipeline.models import CitationStatus
 from rag_pipeline.rag_pipeline import RagPipeline
 
 
@@ -142,3 +143,45 @@ def test_malformed_json_from_provider_degrades_gracefully():
     assert result.answer == "not valid json at all"
     assert result.error is not None
     assert result.verification.total_claims == 0
+
+
+def test_inline_citation_drift_is_flagged_not_rewritten():
+    """When inline [dN] markers in the answer prose disagree with the
+    structured claims' citation_ids, the pipeline must not rewrite the
+    answer text -- it only flags the drift via citation_status."""
+    chunks = [
+        make_retrieved_chunk("c1", "The cafeteria serves lunch from 12pm to 2pm."),
+        make_retrieved_chunk("c2", "Employees get 20 days of paid annual leave.", final_rank=2),
+    ]
+    canned = json.dumps({
+        "answer": "Employees get 20 days of paid leave [d1].",
+        "claims": [{
+            "text": "Employees get 20 days of paid leave.",
+            "citation_ids": ["d2"],
+            "supporting_quote": "20 days of paid annual leave",
+        }],
+    })
+    pipeline = RagPipeline(FakeRetriever(chunks), MockProvider(canned_json=canned))
+
+    result = pipeline.answer("How many days of paid leave?")
+
+    assert result.error is None
+    assert result.answer == "Employees get 20 days of paid leave [d1]."
+    assert result.citation_status == CitationStatus.INLINE_DRIFT
+
+
+def test_verification_failure_takes_precedence_over_inline_drift():
+    chunks = [make_retrieved_chunk("c1", "Employees get 20 days of paid annual leave.")]
+    canned = json.dumps({
+        "answer": "Employees get 20 days of paid leave [d1].",
+        "claims": [{
+            "text": "Employees get 20 days of paid leave.",
+            "citation_ids": ["d99"],
+        }],
+    })
+    pipeline = RagPipeline(FakeRetriever(chunks), MockProvider(canned_json=canned))
+
+    result = pipeline.answer("question")
+
+    assert result.verification.failed_claims == 1
+    assert result.citation_status == CitationStatus.VERIFICATION_FAILED

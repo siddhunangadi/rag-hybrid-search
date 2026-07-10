@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
@@ -49,12 +50,19 @@ class ConfidenceScores(BaseModel):
     overall: float
 
 
+class CitationStatus(str, Enum):
+    OK = "ok"
+    INLINE_DRIFT = "inline_drift"
+    VERIFICATION_FAILED = "verification_failed"
+
+
 class RagAnswer(BaseModel):
     answer: Optional[str]
     citations: list[str]
     structured_citations: list[Citation] = []
     confidence: ConfidenceScores
     verification: VerificationReport
+    citation_status: CitationStatus = CitationStatus.OK
     error: Optional[str] = None
 
 

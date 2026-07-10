@@ -17,11 +17,11 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from rag_hybrid_search.trace import RequestTrace
-from rag_pipeline.eval.metrics import error_record, evaluate_question
-from rag_pipeline.eval.questions import load_questions
-from rag_pipeline.eval.report import write_report
-from rag_pipeline.generation_provider import MockProvider
+from rag_hybrid_search.trace import RequestTrace  # noqa: E402
+from rag_pipeline.eval.metrics import error_record, evaluate_question  # noqa: E402
+from rag_pipeline.eval.questions import load_questions  # noqa: E402
+from rag_pipeline.eval.report import write_report  # noqa: E402
+from rag_pipeline.generation_provider import MockProvider  # noqa: E402
 
 _SECRET_SETTINGS_FIELDS = {"nvidia_api_key", "gemini_api_key", "debug_token"}
 

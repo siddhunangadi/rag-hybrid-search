@@ -1,4 +1,4 @@
-from rag_hybrid_search.compliance.query_router import QueryIntent, classify_query
+from rag_hybrid_search.compliance.query_router import classify_query
 
 
 def test_classifies_structured_article_reference():

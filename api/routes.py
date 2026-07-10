@@ -100,22 +100,10 @@ def _chunker_for_document_type(document_type: DocumentTypeParam, document_title:
 
 
 def _ingest_one(document: IndexDocument, container: Container) -> IndexResult:
-    """Write a single uploaded document to disk and ingest it, catching per-item errors."""
-    try:
-        safe_name = _safe_filename(document.filename)
-        loader = _loader_for_filename(safe_name)
-        dest_path = container.uploads_dir / safe_name
-        dest_path.write_text(document.content, encoding="utf-8")
-
-        chunker = _chunker_for_document_type(document.document_type, safe_name)
-        ingestion_pipeline = container.build_ingestion_pipeline(loader, chunker=chunker)
-        status = ingestion_pipeline.ingest(str(dest_path))
-        return IndexResult(
-            filename=document.filename,
-            status="ready" if status == IndexStatus.READY else "failed",
-        )
-    except Exception as e:  # noqa: BLE001 - deliberately isolate per-document failures
-        return IndexResult(filename=document.filename, status="failed", error=str(e))
+    """Ingest a single JSON-submitted text document, catching per-item errors."""
+    return _ingest_bytes(
+        document.filename, document.content.encode("utf-8"), document.document_type, container
+    )
 
 
 def _ingest_bytes(

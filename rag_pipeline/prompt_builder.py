@@ -101,6 +101,9 @@ Rules:
   into a single claim. Each claim's "text" must be fully supported by
   its ONE cited block alone. If a full statement genuinely requires two
   sources, express it as two separate claims, each citing its own source.
+- Every independently verifiable factual assertion MUST produce exactly one claim object.
+  If a single sentence contains multiple factual assertions (e.g. "A because B."), split
+  them into separate claims, each with its own citation_ids, even when they cite the same source.
 - Do NOT include a supporting_quote field. The backend extracts the
   supporting quote itself from the cited block -- you only provide the
   claim text and its single citation id.
@@ -126,6 +129,23 @@ CORRECT (one claim per source):
 
 WRONG (claim combines wording from two different sources into one citation):
 {{"answer": "Personal information may only be retained as long as necessary, and can be erased on request [d1].", "claims": [{{"text": "Personal information may only be retained as long as necessary and can be erased on request.", "citation_ids": ["d1"]}}]}}
+
+Example -- one claim per factual assertion, even from the same source:
+<context>
+[d1]
+Granularity dominates detection accuracy because architecture-specific
+features overfit to training distribution shifts.
+</context>
+
+<question>
+Why does granularity dominate detection accuracy?
+</question>
+
+CORRECT (two claims, one per assertion):
+{{"answer": "Granularity dominates detection accuracy [d1] because architecture-specific features overfit to training distribution shifts [d1].", "claims": [{{"text": "Granularity dominates detection accuracy.", "citation_ids": ["d1"]}}, {{"text": "Architecture-specific features overfit to training distribution shifts.", "citation_ids": ["d1"]}}]}}
+
+WRONG (one claim collapsing two assertions):
+{{"answer": "Granularity dominates detection accuracy because architecture-specific features overfit to training distribution shifts [d1].", "claims": [{{"text": "Granularity dominates detection accuracy because architecture-specific features overfit to training distribution shifts.", "citation_ids": ["d1"]}}]}}
 
 WRONG (refusing to answer even though the passage supports it):
 {{"answer": "I don't know.", "claims": []}}

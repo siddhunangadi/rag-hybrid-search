@@ -124,6 +124,13 @@ def test_prompt_v2_instructs_one_citation_per_claim():
     assert "Never combine or concatenate wording from two different" in prompt
 
 
+def test_prompt_v2_instructs_one_claim_per_assertion():
+    context = PromptContext(text="[d1]\nsome fact", doc_id_map={"d1": "c1"})
+    prompt = build_prompt("What is the fact?", context, prompt_version="v2")
+    assert "MUST produce exactly one claim object" in prompt
+    assert "even when they cite the same source" in prompt
+
+
 def test_unknown_prompt_version_raises():
     context = PromptContext(text="", doc_id_map={})
     try:

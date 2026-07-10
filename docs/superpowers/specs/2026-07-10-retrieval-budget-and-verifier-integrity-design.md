@@ -27,7 +27,11 @@ decomposition / multi-query retrieval and is its own design.
 
 ## Changes
 
-### 1. Retrieval budget (fused-candidate truncation)
+### 1. Rerank candidate budget (fused-candidate truncation)
+
+Named "rerank candidate budget," not "retrieval budget" — the budget is
+applied after retrieval (dense + BM25 + fusion), only trimming what
+reaches the reranker.
 
 `rag_hybrid_search/config.py`: new setting `rerank_fused_top_n: int = 8`
 (env `RAG_FUSED_TOP_N`). Validation extended:
@@ -61,6 +65,19 @@ Saved                     : 9 reranker evaluations
 
 `Saved = fusion_candidates - sent_to_reranker`.
 
+**Expected impact:** fewer reranker evaluations, smaller prompt, lower
+generation latency, identical retrieval recall (dense_k/sparse_k
+unchanged), no change to the ranking algorithm itself.
+
+**Backward compatibility:** existing deployments unaffected unless
+`RAG_FUSED_TOP_N` is explicitly set. Default (8) preserves current
+rerank_top_n=5 behavior with no observable change beyond the latency win.
+
+**Risks:** a very small `fused_top_n` can cut recall (dropping a
+candidate the reranker would have promoted). Recommended default:
+`dense_k=10, sparse_k=10, fused_top_n=8, rerank_top_n=5`. Don't go below
+`rerank_top_n + ~2` without re-checking recall on eval questions.
+
 ### 3. Verifier: no silent citation mutation
 
 `citation_verifier.py`, reattribution block (currently lines 56-67):
@@ -78,14 +95,14 @@ unconditionally in this branch. No `ClaimResult`/`Claim` schema change
 class CitationStatus(str, Enum):
     OK = "ok"
     INLINE_DRIFT = "inline_drift"
-    CLAIM_VERIFICATION_FAILED = "claim_verification_failed"
+    VERIFICATION_FAILED = "verification_failed"
 ```
 
 `RagAnswer` gains `citation_status: CitationStatus` (new field — there was
 no prior bool). Derivation in `rag_pipeline.py` after verification and
 citation-check, precedence:
 
-1. Any `claim_results[].passed == False` → `CLAIM_VERIFICATION_FAILED`
+1. Any `claim_results[].passed == False` → `VERIFICATION_FAILED`
    (detail already in `verification.claim_results[].failure_reason`,
    which now includes `citation_reattribution_candidate` from change #3).
 2. Else inline `[dN]` set != structured `citation_ids` set (drift
@@ -153,10 +170,16 @@ into `score_confidence` is a follow-up, not bundled here.
 - `rag_pipeline` tests: `_reconcile_inline_citations` drift case asserts
   `RagAnswer.answer` unchanged (no rewrite) and
   `citation_status=CitationStatus.INLINE_DRIFT`; add a case for
-  `CLAIM_VERIFICATION_FAILED` precedence over `INLINE_DRIFT` when both
+  `VERIFICATION_FAILED` precedence over `INLINE_DRIFT` when both
   conditions are present.
 - `prompt_builder` test: new instruction text and worked example present
   in v2 template output.
+
+**Note:** one claim per assertion is a prompt-level instruction, not an
+enforced invariant — it improves verification granularity but can't
+guarantee the model decomposes every complex answer perfectly. No code
+enforces claim count; a model that ignores the instruction still
+produces a valid (if coarser) verification result.
 - One end-to-end regression: a drifted-citation answer flows through
   the full pipeline and comes out with `citation_status=INLINE_DRIFT`,
   unmodified answer text, and the trace shows "no mutation performed".

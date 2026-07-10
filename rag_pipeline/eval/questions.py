@@ -31,10 +31,31 @@ class Dataset:
 def load_questions(path: str | Path) -> tuple[Dataset, list[EvalQuestion]]:
     raw = yaml.safe_load(Path(path).read_text())
 
+    if not isinstance(raw, dict):
+        raise ValueError("questions.yaml is empty or not a valid YAML mapping")
+
+    if "dataset" not in raw:
+        raise ValueError("questions.yaml missing required top-level key: 'dataset'")
+
+    if "questions" not in raw:
+        raise ValueError("questions.yaml missing required top-level key: 'questions'")
+
     dataset_raw = raw["dataset"]
     dataset = Dataset(name=dataset_raw["name"], version=dataset_raw["version"])
 
     questions = [_parse_question(q) for q in raw["questions"]]
+
+    # Check for duplicate ids
+    ids = [q.id for q in questions]
+    seen = set()
+    duplicates = set()
+    for id_val in ids:
+        if id_val in seen:
+            duplicates.add(id_val)
+        seen.add(id_val)
+    if duplicates:
+        raise ValueError(f"questions.yaml contains duplicate question ids: {sorted(duplicates)}")
+
     return dataset, questions
 
 

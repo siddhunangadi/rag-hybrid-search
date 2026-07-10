@@ -87,3 +87,72 @@ questions:
 
     with pytest.raises(ValueError, match="question"):
         load_questions(path)
+
+
+def test_load_questions_rejects_empty_yaml(tmp_path):
+    path = tmp_path / "questions.yaml"
+    path.write_text("")
+
+    with pytest.raises(ValueError, match="empty or not a valid YAML mapping"):
+        load_questions(path)
+
+
+def test_load_questions_rejects_non_dict_yaml(tmp_path):
+    path = tmp_path / "questions.yaml"
+    path.write_text("- item1\n- item2\n")
+
+    with pytest.raises(ValueError, match="empty or not a valid YAML mapping"):
+        load_questions(path)
+
+
+def test_load_questions_rejects_missing_dataset_key(tmp_path):
+    path = tmp_path / "questions.yaml"
+    path.write_text("""
+questions:
+  - id: q001
+    question: "What is X?"
+    category: factual
+    expected:
+      answer: "X."
+      citation_doc_ids: ["d1"]
+""")
+
+    with pytest.raises(ValueError, match="dataset"):
+        load_questions(path)
+
+
+def test_load_questions_rejects_missing_questions_key(tmp_path):
+    path = tmp_path / "questions.yaml"
+    path.write_text("""
+dataset:
+  name: benchmark-v1
+  version: "1.0.0"
+""")
+
+    with pytest.raises(ValueError, match="questions"):
+        load_questions(path)
+
+
+def test_load_questions_rejects_duplicate_ids(tmp_path):
+    path = tmp_path / "questions.yaml"
+    path.write_text("""
+dataset:
+  name: benchmark-v1
+  version: "1.0.0"
+questions:
+  - id: q001
+    question: "What is X?"
+    category: factual
+    expected:
+      answer: "X."
+      citation_doc_ids: ["d1"]
+  - id: q001
+    question: "What is Y?"
+    category: comparative
+    expected:
+      answer: "Y."
+      citation_doc_ids: ["d2"]
+""")
+
+    with pytest.raises(ValueError, match="duplicate.*q001"):
+        load_questions(path)

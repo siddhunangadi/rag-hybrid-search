@@ -114,3 +114,37 @@ def test_compare_with_changed_questions_exits_4(tmp_path):
         cwd=repo_root, capture_output=True, text=True,
     )
     assert result.returncode == 4
+
+
+def test_check_baseline_compares_existing_report(tmp_path):
+    create = _run_eval(tmp_path, "--update-baseline")
+    assert create.returncode == 0, create.stderr
+    report_path = tmp_path / "report" / "report.json"
+    assert report_path.exists()
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "scripts/check_baseline.py",
+         "--report", str(report_path),
+         "--baseline-dir", str(tmp_path / "baselines")],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Overall: OK" in result.stdout
+
+
+def test_check_baseline_rejects_pre_phase2_report(tmp_path):
+    report_path = tmp_path / "old_report.json"
+    report_path.write_text(json.dumps({
+        "metadata": {}, "summary": {"error_count": 0, "total_questions": 0,
+                                    "objective": {"aggregate": None},
+                                    "subjective": {"aggregate": None}},
+        "results": [],
+    }))
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "scripts/check_baseline.py", "--report", str(report_path),
+         "--baseline-dir", str(tmp_path)],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    assert result.returncode == 5
+    assert "question_set_hash" in result.stderr

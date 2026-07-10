@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import platform
 import subprocess
 import sys
 import time
@@ -18,9 +19,21 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from rag_hybrid_search.trace import RequestTrace  # noqa: E402
+from rag_pipeline.eval.baseline import (  # noqa: E402
+    BaselineCorruptError,
+    BaselineMissingError,
+    load_baseline,
+    question_set_hash,
+    save_baseline,
+)
+from rag_pipeline.eval.comparison import QuestionSetMismatchError, compare  # noqa: E402
 from rag_pipeline.eval.metrics import error_record, evaluate_question  # noqa: E402
 from rag_pipeline.eval.questions import load_questions  # noqa: E402
-from rag_pipeline.eval.report import write_report  # noqa: E402
+from rag_pipeline.eval.renderer import render_comparison  # noqa: E402
+from rag_pipeline.eval.report import build_summary, write_report  # noqa: E402
+from rag_pipeline.eval.schema import BASELINE_VERSION, Baseline  # noqa: E402
+from rag_pipeline.eval.snapshot import snapshot_from_records  # noqa: E402
+from rag_pipeline.eval.thresholds import load_thresholds  # noqa: E402
 from rag_pipeline.generation_provider import MockProvider  # noqa: E402
 
 _SECRET_SETTINGS_FIELDS = {"nvidia_api_key", "gemini_api_key", "debug_token"}
@@ -80,14 +93,51 @@ def _build_pipeline(use_fixture: bool):
     return container.rag_pipeline, container.generation_provider, container.settings
 
 
+_PIPELINE_CONFIG_FIELDS = [
+    "provider", "generation_model", "chunking_strategy", "chunk_size",
+    "chunk_overlap", "dense_k", "sparse_k", "rerank_top_n", "rerank_backend",
+]
+
+EXIT_OK = 0
+EXIT_REGRESSION = 1
+EXIT_BASELINE_MISSING = 2
+EXIT_BASELINE_CORRUPT = 3
+EXIT_HASH_MISMATCH = 4
+EXIT_USAGE = 5
+
+
+def _pipeline_config(settings) -> dict:
+    return {f: getattr(settings, f, None) for f in _PIPELINE_CONFIG_FIELDS}
+
+
+def _git_branch() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--questions", default="eval/questions.yaml")
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--fixture-pipeline", action="store_true", help="Use an in-memory fixture pipeline instead of building the real one (for smoke-testing this script).")
+    parser.add_argument("--update-baseline", action="store_true")
+    parser.add_argument("--compare-baseline", action="store_true")
+    parser.add_argument("--baseline-name", default="main")
+    parser.add_argument("--baseline-dir", default="eval/baselines")
+    parser.add_argument("--notes", default=None)
+    parser.add_argument("--thresholds", default="eval/thresholds.yaml")
     args = parser.parse_args()
 
+    if args.update_baseline and args.compare_baseline:
+        print("Use either --update-baseline or --compare-baseline, not both.", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
     dataset, questions = load_questions(args.questions)
+    q_hash = question_set_hash(args.questions)
     pipeline, generation_provider, settings = _build_pipeline(args.fixture_pipeline)
     judge_provider = generation_provider  # Phase 1 default: judge = generation
 
@@ -114,12 +164,55 @@ def main() -> None:
         "settings": _sanitized_settings(settings),
         "corpus_version": "unknown",
         "dataset": {"name": dataset.name, "version": dataset.version},
+        "question_set_hash": q_hash,
+        "pipeline_config": _pipeline_config(settings),
     }
 
     out_dir = args.out_dir or f"eval/reports/{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}"
     json_path, html_path = write_report(records, metadata, out_dir)
     print(f"Wrote {json_path}")
     print(f"Wrote {html_path}")
+
+    if args.update_baseline or args.compare_baseline:
+        snapshot = snapshot_from_records(
+            records, build_summary(records), q_hash, _pipeline_config(settings)
+        )
+
+    if args.update_baseline:
+        baseline = Baseline(
+            baseline_version=BASELINE_VERSION,
+            created_at=metadata["timestamp"],
+            git_commit=metadata["git_commit"],
+            package_version=metadata["package_version"],
+            branch=_git_branch(),
+            notes=args.notes,
+            python_version=platform.python_version(),
+            platform=platform.platform(),
+            question_set_hash=q_hash,
+            pipeline_config=snapshot.pipeline_config,
+            summary=snapshot.summary,
+            per_question=snapshot.per_question,
+        )
+        path = save_baseline(baseline, args.baseline_name, base_dir=args.baseline_dir)
+        print(f"Wrote baseline {path}")
+
+    if args.compare_baseline:
+        try:
+            baseline = load_baseline(args.baseline_name, base_dir=args.baseline_dir)
+            thresholds = load_thresholds(args.thresholds)
+            result = compare(snapshot, baseline.snapshot(), thresholds)
+        except BaselineMissingError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(EXIT_BASELINE_MISSING)
+        except BaselineCorruptError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(EXIT_BASELINE_CORRUPT)
+        except QuestionSetMismatchError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(EXIT_HASH_MISMATCH)
+        print(render_comparison(result))
+        if result.overall == "fail":
+            sys.exit(EXIT_REGRESSION)
 
 
 if __name__ == "__main__":

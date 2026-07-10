@@ -40,7 +40,14 @@ def judge_answer(
     prompt = _JUDGE_PROMPT_TEMPLATE.format(
         question=question, expected_answer=expected_answer, model_answer=model_answer,
     )
-    raw_response = judge_provider.generate(prompt)
+
+    try:
+        raw_response = judge_provider.generate(prompt)
+    except Exception as e:
+        return JudgeVerdict(
+            verdict="INCORRECT", reasoning=f"Judge call failed: {type(e).__name__}: {e}",
+            prompt=prompt, raw_response="",
+        )
 
     try:
         parsed = json.loads(raw_response)

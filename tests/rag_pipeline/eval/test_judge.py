@@ -57,3 +57,22 @@ def test_judge_answer_falls_back_to_incorrect_on_missing_verdict_key():
     result = judge_answer("Q", "gold", "model", provider)
 
     assert result.verdict == "INCORRECT"
+
+
+class FailingJudgeProvider:
+    """Judge provider that raises an exception on generate()."""
+    def __init__(self, exception: Exception):
+        self._exception = exception
+
+    def generate(self, prompt, **kwargs):
+        raise self._exception
+
+
+def test_judge_answer_falls_back_to_incorrect_on_provider_exception():
+    provider = FailingJudgeProvider(RuntimeError("network down"))
+
+    result = judge_answer("What is X?", "X is a thing.", "garbage", provider)
+
+    assert result.verdict == "INCORRECT"
+    assert "judge call failed" in result.reasoning.lower() or "provider" in result.reasoning.lower()
+    assert result.raw_response == ""

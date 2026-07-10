@@ -296,3 +296,29 @@ def test_rerank_fused_top_n_caps_candidates_sent_to_reranker(tmp_path):
     assert reranker.received_candidates is not None
     assert len(reranker.received_candidates) == 3
     assert len(results) == 1
+
+
+def test_retrieve_records_budget_trace_fields(hybrid_retriever):
+    results, trace = hybrid_retriever.retrieve("ERROR_CODE_0x834")
+
+    assert trace.fusion_candidates == 3
+    assert trace.budget_applied == 10
+    assert trace.sent_to_reranker == 3
+    assert trace.returned == len(results)
+
+
+def test_retrieve_records_smaller_budget_than_fusion_candidates(tmp_path):
+    docs = [make_chunk(f"c{i}", f"document number {i} about search") for i in range(6)]
+    reranker = RecordingRerankProvider()
+    retriever = build_retriever(
+        tmp_path, docs, reranker,
+        dense_weight=0.5, sparse_weight=0.5,
+        dense_k=6, sparse_k=6, rerank_top_n=1, rerank_fused_top_n=3,
+    )
+
+    _, trace = retriever.retrieve("document about search")
+
+    assert trace.fusion_candidates == 6
+    assert trace.budget_applied == 3
+    assert trace.sent_to_reranker == 3
+    assert trace.returned == 1

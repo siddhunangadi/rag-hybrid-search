@@ -158,13 +158,18 @@ class RequestTrace:
             formula = " + ".join(terms) + f" = {row['rrf_score']:.5f}"
             print(f"  chunk={row['chunk_id'][:12]}  dense_rank={row['dense_rank']}  bm25_rank={row['bm25_rank']}  {formula}")
 
-    def log_rerank(self, provider_name: str, fused: list, reranked: list, latency_ms: float) -> None:
+    def log_rerank(self, provider_name: str, fused: list, reranked: list, latency_ms: float, budget_applied: int) -> None:
         selected_ids = {r.chunk.chunk_id for r in reranked}
         dropped = [c.chunk.chunk_id for c in fused if c.chunk.chunk_id not in selected_ids]
+        fusion_candidates = len(self._data.get("fusion", []))
         self._data["rerank"] = {
             "provider": provider_name,
             "selected": [{"chunk_id": r.chunk.chunk_id, "score": r.rerank_score, "final_rank": r.final_rank} for r in reranked],
             "dropped": dropped,
+            "budget_applied": budget_applied,
+            "fusion_candidates": fusion_candidates,
+            "sent_to_reranker": len(fused),
+            "returned": len(reranked),
         }
         self.mark("rerank", latency_ms)
         if not self.enabled:
@@ -176,6 +181,20 @@ class RequestTrace:
             print(f"  SELECTED  chunk={r.chunk.chunk_id[:12]}  rank={r.final_rank}  score={score}")
         for cid in dropped:
             print(f"  DROPPED   chunk={cid[:12]}  reason=not in reranker top-{len(reranked)}")
+
+        dense_count = len(self._data.get("dense", []))
+        bm25_count = len(self._data.get("bm25", []))
+        saved = fusion_candidates - len(fused)
+        _section("RETRIEVAL BUDGET")
+        _kv(**{
+            "Dense candidates": dense_count,
+            "BM25 candidates": bm25_count,
+            "Unique fused candidates": fusion_candidates,
+            "Configured budget": budget_applied,
+            "Sent to reranker": len(fused),
+            "Returned": len(reranked),
+            "Saved": f"{saved} reranker evaluations",
+        })
 
     def log_pruning(self, before: list, after: list) -> None:
         kept_ids = {r.chunk.chunk_id for r in after}

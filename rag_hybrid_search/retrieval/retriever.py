@@ -97,6 +97,8 @@ class HybridRetriever:
             k=self._rrf_k,
         )
         trace.fusion_latency_ms = (time.perf_counter() - start) * 1000
+        trace.fusion_candidates = len(fused)
+        trace.budget_applied = self._rerank_fused_top_n
         logger.info(
             "retrieve: fusion (rrf_k=%d, dense_weight=%.2f, sparse_weight=%.2f) produced %d candidates latency_ms=%.1f",
             self._rrf_k, self._dense_weight, self._sparse_weight, len(fused), trace.fusion_latency_ms,
@@ -117,6 +119,8 @@ class HybridRetriever:
         budgeted = fused[: self._rerank_fused_top_n]
         reranked = self._rerank_provider.rerank(query, budgeted, top_n=self._rerank_top_n)
         trace.rerank_latency_ms = (time.perf_counter() - start) * 1000
+        trace.sent_to_reranker = len(budgeted)
+        trace.returned = len(reranked)
         logger.info(
             "retrieve: rerank (top_n=%d, fused_budget=%d) via provider=%s returned %d results latency_ms=%.1f",
             self._rerank_top_n, self._rerank_fused_top_n, type(self._rerank_provider).__name__,
@@ -125,6 +129,9 @@ class HybridRetriever:
         logger.debug("retrieve: reranked results %s", [(r.chunk.chunk_id, r.rerank_score, r.final_rank) for r in reranked])
         logger.info("retrieve: done total_latency_ms=%.1f", trace.total_latency_ms)
         if dev_trace is not None:
-            dev_trace.log_rerank(type(self._rerank_provider).__name__, budgeted, reranked, trace.rerank_latency_ms)
+            dev_trace.log_rerank(
+                type(self._rerank_provider).__name__, budgeted, reranked,
+                trace.rerank_latency_ms, self._rerank_fused_top_n,
+            )
 
         return reranked, trace

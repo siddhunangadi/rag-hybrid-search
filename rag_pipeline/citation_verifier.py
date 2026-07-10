@@ -50,9 +50,14 @@ def verify_citations(
                 best_quote_score = max(best_quote_score, score)
 
         # The model occasionally copies a supporting_quote verbatim but
-        # tags it with the wrong doc id. Rather than fail a claim whose
-        # quote is genuinely present in the context, re-attribute it to
-        # whichever doc actually contains it.
+        # tags it with the wrong doc id. A better-matching doc might exist
+        # in context -- but the verifier never repairs evidence, only
+        # validates it. Detecting this case and still failing the claim
+        # (with a distinct, actionable reason) is intentional: it favors
+        # evidence integrity over answer recovery. Rewriting citation_ids
+        # here would mean the caller sees a citation the model never
+        # actually wrote.
+        reattribution_doc_id = None
         if doc_ids_valid and best_quote_score < QUOTE_MATCH_THRESHOLD:
             best_doc_id, best_doc_score = None, best_quote_score
             for doc_id in context.doc_id_map:
@@ -63,14 +68,20 @@ def verify_citations(
                 if score > best_doc_score:
                     best_doc_id, best_doc_score = doc_id, score
             if best_doc_id is not None and best_doc_score >= QUOTE_MATCH_THRESHOLD:
-                claim.citation_ids = [best_doc_id]
-                best_quote_score = best_doc_score
+                reattribution_doc_id = best_doc_id
 
-        passed = doc_ids_valid and best_quote_score >= QUOTE_MATCH_THRESHOLD
+        passed = (
+            doc_ids_valid
+            and best_quote_score >= QUOTE_MATCH_THRESHOLD
+            and reattribution_doc_id is None
+        )
 
         failure_reason = None
         if not doc_ids_valid:
             failure_reason = "hallucinated_citation_id"
+        elif reattribution_doc_id is not None:
+            missing_quotes.append(claim.supporting_quote)
+            failure_reason = "citation_reattribution_candidate"
         elif not passed:
             missing_quotes.append(claim.supporting_quote)
             # A quote that scores low against its own cited chunk but scores

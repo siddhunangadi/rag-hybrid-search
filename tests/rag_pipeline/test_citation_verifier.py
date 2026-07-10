@@ -72,12 +72,13 @@ def test_multiple_claims_mixed_pass_fail():
     assert report.failed_claims == 1
 
 
-def test_misattributed_citation_id_is_corrected_when_quote_matches_another_doc():
+def test_misattributed_citation_id_is_flagged_not_silently_corrected():
     """The model sometimes copies a verbatim quote correctly but tags it
-    with the wrong doc id (e.g. always citing d1 out of habit). If the
-    quote is a strong match for a *different* doc in context, re-attribute
-    the citation to that doc instead of failing a claim whose quote is
-    actually verbatim and present."""
+    with the wrong doc id. The verifier detects a better-matching doc but
+    must never rewrite citation_ids -- it validates model output, it
+    doesn't repair it. The claim fails with a distinct reason so the
+    caller can decide what to do, and citation_ids stay exactly what the
+    model wrote."""
     context = PromptContext(
         text=(
             "[d1]\nThe cafeteria serves lunch from 12pm to 2pm daily.\n\n"
@@ -91,9 +92,11 @@ def test_misattributed_citation_id_is_corrected_when_quote_matches_another_doc()
         supporting_quote="20 days of paid annual leave",
     )
     report = verify_citations(make_draft([claim]), context)
-    assert report.verified_claims == 1
-    assert report.claim_results[0].passed is True
-    assert report.claim_results[0].claim.citation_ids == ["d2"]
+    assert report.verified_claims == 0
+    assert report.failed_claims == 1
+    assert report.claim_results[0].passed is False
+    assert report.claim_results[0].failure_reason == "citation_reattribution_candidate"
+    assert report.claim_results[0].claim.citation_ids == ["d1"]
 
 
 def test_quote_matches_despite_mid_sentence_pdf_linewrap_in_chunk():

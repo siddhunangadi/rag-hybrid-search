@@ -30,15 +30,21 @@ This is snapshot testing applied to ML quality metrics.
 ## Architecture
 
 ```
-scripts/run_eval.py  (CLI flags, table rendering, exit codes)
+scripts/run_eval.py  (CLI flags, orchestration, exit codes)
         │
-        ├── rag_pipeline/eval/schema.py       (Pydantic models: Baseline, EvaluationSnapshot,
-        │                                      Thresholds, Finding, ComparisonResult)
-        ├── rag_pipeline/eval/baseline.py     (save/load baseline JSON — I/O only,
-        │                                      validation delegated to schema models)
+        ├── rag_pipeline/eval/schema.py       (frozen Pydantic models: Baseline,
+        │                                      EvaluationSnapshot, Thresholds, Finding,
+        │                                      ComparisonResult)
+        ├── rag_pipeline/eval/baseline.py     (save/load baseline JSON — atomic writes
+        │                                      via temp file + os.replace; validation
+        │                                      delegated to schema models)
         ├── rag_pipeline/eval/thresholds.py   (load thresholds.yaml, merge over defaults)
-        └── rag_pipeline/eval/comparison.py   (pure compare logic, no I/O)
+        ├── rag_pipeline/eval/comparison.py   (pure compare logic, no I/O)
+        ├── rag_pipeline/eval/snapshot.py     (build EvaluationSnapshot from report shapes)
+        └── rag_pipeline/eval/renderer.py     (console table rendering — presentation only)
 ```
+
+Baselines also record `python_version` and `platform` for reproducibility.
 
 Typed models throughout — no nested-dict plumbing. The project already favors Pydantic
 (`RagAnswer`, `Chunk`, `RetrievalTrace`); baselines follow suit. `comparison.py` never

@@ -119,6 +119,15 @@ def test_comparison_result_overall_is_worst_finding():
 def test_question_metrics_allows_bool_and_none_values():
     qm = QuestionMetrics(status="success", objective_metrics={"verification_pass": True, "coverage": None})
     assert qm.objective_metrics["verification_pass"] is True
+
+
+def test_models_are_frozen():
+    baseline = Baseline.model_validate(_baseline_payload())
+    with pytest.raises(ValidationError):
+        baseline.git_commit = "mutated"
+    snap = baseline.snapshot()
+    with pytest.raises(ValidationError):
+        snap.question_set_hash = "mutated"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -130,53 +139,62 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'rag_pipeline.eval.sche
 
 ```python
 # rag_pipeline/eval/schema.py
-"""Typed models for baseline storage and regression comparison (eval Phase 2)."""
+"""Typed models for baseline storage and regression comparison (eval Phase 2).
+
+All models are frozen: snapshots and baselines are immutable records of a run.
+"""
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 BASELINE_VERSION = 1
 
 FindingStatus = Literal["ok", "warn", "fail", "info"]
 
 
-class MetricThreshold(BaseModel):
+class _Frozen(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+
+class MetricThreshold(_Frozen):
     warn: float
     fail: float
 
 
-class Thresholds(BaseModel):
+class Thresholds(_Frozen):
     metrics: dict[str, MetricThreshold]
     error_count: MetricThreshold
     per_question_fail: float = 0.5
 
 
-class QuestionMetrics(BaseModel):
+class QuestionMetrics(_Frozen):
     status: str
     objective_metrics: dict[str, Optional[float | bool]] = {}
 
 
-class SnapshotSummary(BaseModel):
+class SnapshotSummary(_Frozen):
     objective: Optional[dict[str, float]] = None
     subjective: Optional[dict[str, float]] = None
     error_count: int
     total_questions: int
 
 
-class EvaluationSnapshot(BaseModel):
+class EvaluationSnapshot(_Frozen):
     question_set_hash: str
     summary: SnapshotSummary
     per_question: dict[str, QuestionMetrics]
     pipeline_config: dict = {}
 
 
-class Baseline(BaseModel):
+class Baseline(_Frozen):
     baseline_version: int
     created_at: str
     git_commit: str = "unknown"
     package_version: str = "unknown"
     branch: Optional[str] = None
     notes: Optional[str] = None
+    python_version: Optional[str] = None
+    platform: Optional[str] = None
     question_set_hash: str
     pipeline_config: dict = {}
     summary: SnapshotSummary
@@ -191,7 +209,7 @@ class Baseline(BaseModel):
         )
 
 
-class Finding(BaseModel):
+class Finding(_Frozen):
     metric: str
     scope: str
     baseline: Optional[float] = None
@@ -204,7 +222,7 @@ _SEVERITY = {"ok": 0, "info": 0, "warn": 1, "fail": 2}
 _BY_SEVERITY = {0: "ok", 1: "warn", 2: "fail"}
 
 
-class ComparisonResult(BaseModel):
+class ComparisonResult(_Frozen):
     findings: list[Finding]
 
     @property
@@ -216,7 +234,7 @@ class ComparisonResult(BaseModel):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/rag_pipeline/eval/test_schema.py -v`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: Commit**
 
@@ -687,6 +705,8 @@ def test_save_load_round_trip(tmp_path):
     assert path == tmp_path / "main.json"
     loaded = load_baseline("main", base_dir=tmp_path)
     assert loaded == _baseline()
+    # atomic write leaves no temp file behind
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_missing_baseline_raises_with_hint(tmp_path):
@@ -738,6 +758,7 @@ Expected: FAIL — `ModuleNotFoundError`
 """Baseline persistence: save/load eval/baselines/<name>.json. Validation via schema models."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -766,7 +787,15 @@ def baseline_path(name: str, base_dir: str | Path = DEFAULT_BASE_DIR) -> Path:
 def save_baseline(baseline: Baseline, name: str, base_dir: str | Path = DEFAULT_BASE_DIR) -> Path:
     path = baseline_path(name, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(baseline.model_dump_json(indent=2))
+    # Atomic write: a crash mid-write must never leave a truncated baseline
+    # that later fails as "corrupt". Same-directory temp file so os.replace
+    # stays on one filesystem (rename is atomic only within a filesystem).
+    tmp_path = path.with_suffix(".json.tmp")
+    with open(tmp_path, "w") as f:
+        f.write(baseline.model_dump_json(indent=2))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
     return path
 
 
@@ -806,16 +835,16 @@ git commit -m "feat: add baseline save/load with versioning and question-set has
 ### Task 5: Snapshot assembly + CLI integration in `run_eval.py`
 
 **Files:**
-- Create: `rag_pipeline/eval/snapshot.py`
-- Modify: `scripts/run_eval.py` (add flags, comparison rendering, exit codes; current `main()` is at the bottom of the file)
-- Test: `tests/rag_pipeline/eval/test_snapshot.py`, extend `tests/test_run_eval.py`
+- Create: `rag_pipeline/eval/snapshot.py`, `rag_pipeline/eval/renderer.py`
+- Modify: `scripts/run_eval.py` (add flags, exit codes; current `main()` is at the bottom of the file)
+- Test: `tests/rag_pipeline/eval/test_snapshot.py`, `tests/rag_pipeline/eval/test_renderer.py`, extend `tests/test_run_eval.py`
 
 **Interfaces:**
 - Consumes: Tasks 1–4 (`compare`, `load_baseline`, `save_baseline`, `question_set_hash`, `load_thresholds`, all models).
 - Produces:
   - `rag_pipeline/eval/snapshot.py`: `snapshot_from_records(records: list[dict], summary: dict, question_set_hash: str, pipeline_config: dict) -> EvaluationSnapshot` and `snapshot_summary_from_report_summary(summary: dict) -> SnapshotSummary`. Phase 1 `build_summary` shape: `summary["objective"]["aggregate"]` is a metric→float dict or `None`; same for `subjective`; plus `error_count`, `total_questions`.
   - `run_eval.py` new flags: `--update-baseline`, `--compare-baseline`, `--baseline-name` (default `main`), `--baseline-dir` (default `eval/baselines`, for tests), `--notes` (default None), `--thresholds` (default `eval/thresholds.yaml`).
-  - `render_comparison(result: ComparisonResult) -> str` in `run_eval.py` — fixed-width table `Metric / Scope / Baseline / Current / Δ / Status`.
+  - `rag_pipeline/eval/renderer.py`: `render_comparison(result: ComparisonResult) -> str` — fixed-width table `Metric / Scope / Baseline / Current / Δ / Status` (presentation lives here so ConsoleRenderer/HtmlRenderer variants can coexist later; `run_eval.py` stays orchestration-only).
   - Exit codes per Global Constraints. `report.json` metadata gains `"question_set_hash"` and `"pipeline_config"`.
   - `_pipeline_config(settings) -> dict` selecting comparable fields: `provider, generation_model, chunking_strategy, chunk_size, chunk_overlap, dense_k, sparse_k, rerank_top_n, rerank_backend` (via `getattr(settings, f, None)`).
 
@@ -921,6 +950,61 @@ def snapshot_from_records(
 
 Run: `python -m pytest tests/rag_pipeline/eval/test_snapshot.py -v`
 Expected: 2 passed
+
+- [ ] **Step 4a: Write failing renderer test**
+
+```python
+# tests/rag_pipeline/eval/test_renderer.py
+from rag_pipeline.eval.renderer import render_comparison
+from rag_pipeline.eval.schema import ComparisonResult, Finding
+
+
+def test_render_comparison_table():
+    result = ComparisonResult(findings=[
+        Finding(metric="citation_f1", scope="aggregate",
+                baseline=0.9, current=0.8, delta=-0.1, status="fail"),
+        Finding(metric="pipeline_config", scope="config",
+                baseline=None, current=None, delta=None, status="warn"),
+    ])
+    out = render_comparison(result)
+    assert "Status" in out
+    assert "citation_f1" in out and "FAIL" in out
+    assert "-0.100" in out
+    assert "-" in out  # None rendered as dash
+    assert out.strip().endswith("Overall: FAIL")
+```
+
+Run: `python -m pytest tests/rag_pipeline/eval/test_renderer.py -v`
+Expected: FAIL — `ModuleNotFoundError`
+
+- [ ] **Step 4b: Implement `renderer.py`**
+
+```python
+# rag_pipeline/eval/renderer.py
+"""Console rendering of comparison results. Presentation only — no logic, no I/O."""
+from rag_pipeline.eval.schema import ComparisonResult
+
+
+def _format_value(v) -> str:
+    if v is None:
+        return "-"
+    return f"{v:+.3f}" if v < 0 else f"{v:.3f}"
+
+
+def render_comparison(result: ComparisonResult) -> str:
+    header = f"{'Metric':<22}{'Scope':<22}{'Baseline':>10}{'Current':>10}{'Δ':>9}  Status"
+    lines = [header, "-" * len(header)]
+    for f in result.findings:
+        lines.append(
+            f"{f.metric:<22}{f.scope:<22}{_format_value(f.baseline):>10}"
+            f"{_format_value(f.current):>10}{_format_value(f.delta):>9}  {f.status.upper()}"
+        )
+    lines.append(f"\nOverall: {result.overall.upper()}")
+    return "\n".join(lines)
+```
+
+Run: `python -m pytest tests/rag_pipeline/eval/test_renderer.py -v`
+Expected: 1 passed
 
 - [ ] **Step 5: Write failing CLI integration tests**
 
@@ -1028,10 +1112,13 @@ from rag_pipeline.eval.baseline import (  # noqa: E402
     save_baseline,
 )
 from rag_pipeline.eval.comparison import QuestionSetMismatchError, compare  # noqa: E402
-from rag_pipeline.eval.schema import BASELINE_VERSION, Baseline, ComparisonResult  # noqa: E402
+from rag_pipeline.eval.renderer import render_comparison  # noqa: E402
+from rag_pipeline.eval.schema import BASELINE_VERSION, Baseline  # noqa: E402
 from rag_pipeline.eval.snapshot import snapshot_from_records  # noqa: E402
 from rag_pipeline.eval.thresholds import load_thresholds  # noqa: E402
 ```
+
+Also add `import platform` to the stdlib import block at the top.
 
 Add helpers before `main()`:
 
@@ -1060,24 +1147,6 @@ def _git_branch() -> str:
         ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
-
-
-def _format_value(v) -> str:
-    if v is None:
-        return "-"
-    return f"{v:+.3f}" if v < 0 else f"{v:.3f}"
-
-
-def render_comparison(result: ComparisonResult) -> str:
-    header = f"{'Metric':<22}{'Scope':<22}{'Baseline':>10}{'Current':>10}{'Δ':>9}  Status"
-    lines = [header, "-" * len(header)]
-    for f in result.findings:
-        lines.append(
-            f"{f.metric:<22}{f.scope:<22}{_format_value(f.baseline):>10}"
-            f"{_format_value(f.current):>10}{_format_value(f.delta):>9}  {f.status.upper()}"
-        )
-    lines.append(f"\nOverall: {result.overall.upper()}")
-    return "\n".join(lines)
 ```
 
 In `main()`, add arguments after the existing ones, then the mutual-exclusion check right after `parse_args()`:
@@ -1125,6 +1194,8 @@ After the existing `write_report(...)` prints, append:
             package_version=metadata["package_version"],
             branch=_git_branch(),
             notes=args.notes,
+            python_version=platform.python_version(),
+            platform=platform.platform(),
             question_set_hash=q_hash,
             pipeline_config=snapshot.pipeline_config,
             summary=snapshot.summary,
@@ -1165,7 +1236,7 @@ Expected: all pass, no regressions
 - [ ] **Step 10: Commit**
 
 ```bash
-git add rag_pipeline/eval/snapshot.py tests/rag_pipeline/eval/test_snapshot.py scripts/run_eval.py tests/test_run_eval.py
+git add rag_pipeline/eval/snapshot.py rag_pipeline/eval/renderer.py tests/rag_pipeline/eval/test_snapshot.py tests/rag_pipeline/eval/test_renderer.py scripts/run_eval.py tests/test_run_eval.py
 git commit -m "feat: wire baseline update/compare into run_eval with typed snapshots and exit codes"
 ```
 
@@ -1178,7 +1249,7 @@ git commit -m "feat: wire baseline update/compare into run_eval with typed snaps
 - Test: extend `tests/test_run_eval.py`
 
 **Interfaces:**
-- Consumes: Task 5 `snapshot_from_records` and `render_comparison`/exit-code constants (imported from `scripts.run_eval`), Task 4 loaders, Task 3 `compare`, Task 2 `load_thresholds`.
+- Consumes: Task 5 `snapshot_from_records` and `render_comparison` (from `rag_pipeline.eval`), exit-code constants (from `scripts.run_eval`), Task 4 loaders, Task 3 `compare`, Task 2 `load_thresholds`.
 - Produces: CLI `python scripts/check_baseline.py --report <report.json> [--baseline-name main] [--baseline-dir eval/baselines] [--thresholds eval/thresholds.yaml]`. Reads `report.json` (needs `metadata.question_set_hash`, `summary`, `results`), builds a snapshot, compares, prints table, exits with the same codes as Task 5. Reports produced before Phase 2 (no `question_set_hash` in metadata) → exit 5 with message naming the missing field.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1246,6 +1317,7 @@ from rag_pipeline.eval.baseline import (  # noqa: E402
     load_baseline,
 )
 from rag_pipeline.eval.comparison import QuestionSetMismatchError, compare  # noqa: E402
+from rag_pipeline.eval.renderer import render_comparison  # noqa: E402
 from rag_pipeline.eval.snapshot import snapshot_from_records  # noqa: E402
 from rag_pipeline.eval.thresholds import load_thresholds  # noqa: E402
 from scripts.run_eval import (  # noqa: E402
@@ -1254,7 +1326,6 @@ from scripts.run_eval import (  # noqa: E402
     EXIT_HASH_MISMATCH,
     EXIT_REGRESSION,
     EXIT_USAGE,
-    render_comparison,
 )
 
 

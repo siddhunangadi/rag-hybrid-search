@@ -240,6 +240,13 @@ def _build_claim_diagnostics(verification: VerificationReport, context) -> list[
     return rows
 
 
+def _error_answer(e: Exception) -> RagAnswer:
+    return RagAnswer(
+        answer=None, citations=[], confidence=_ZERO_CONFIDENCE,
+        verification=_EMPTY_VERIFICATION, error=str(e),
+    )
+
+
 class RagPipeline:
     def __init__(
         self, retriever, generation_provider: GenerationProvider, chunk_store=None,
@@ -274,96 +281,18 @@ class RagPipeline:
             "Prompt Version": self._prompt_version,
         })
 
-        comparative = is_comparative_query(question)
-        decompose_capture: dict = {}
-        subqueries = (
-            decompose_query(question, self._generation_provider, capture=decompose_capture)
-            if comparative else [question]
-        )
-
-        def _retrieve_one(q: str, trace_for_call):
-            if self._chunk_store is not None:
-                return route_query(q, self._chunk_store, self._retriever, dev_trace=trace_for_call)[0]
-            return self._retriever.retrieve(q, dev_trace=trace_for_call)[0]
-
-        if len(subqueries) == 1:
-            results_per_query = [_retrieve_one(subqueries[0], dev_trace)]
-        else:
-            results_per_query = _retrieve_subqueries_concurrently(subqueries, _retrieve_one)
-
-        concepts_retrieved = sum(1 for results in results_per_query if results)
-        dev_trace.log_query_decomposition(
-            comparative, subqueries, decompose_capture.get("raw"), concepts_retrieved,
-        )
-        retrieved_chunks = _merge_multi_query_results(results_per_query)
-        retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
-        pruned_chunks = prune_by_score_margin(
-            retrieved_chunks, self._context_prune_margin, min_keep=3 if comparative else 1,
-        )
-        dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
-        retrieved_chunks = pruned_chunks
-
-        context = build_context(retrieved_chunks)
-        prompt = build_prompt(question, context, prompt_version=self._prompt_version)
-        dev_trace.log_prompt(prompt)
+        retrieved_chunks, context, prompt = self._prepare_context(question, max_chunks, dev_trace)
 
         try:
             gen_start = time.perf_counter()
             raw_output = self._generation_provider.generate(prompt)
             gen_latency_ms = (time.perf_counter() - gen_start) * 1000
-            dev_trace.log_generation(
-                type(self._generation_provider).__name__,
-                getattr(self._generation_provider, "model_name", "unknown"),
-                raw_output, gen_latency_ms,
-            )
         except Exception as e:
             dev_trace.finish()
-            return RagAnswer(
-                answer=None, citations=[], confidence=_ZERO_CONFIDENCE,
-                verification=_EMPTY_VERIFICATION, error=str(e),
-            )
+            return _error_answer(e)
 
-        draft, parse_error = self._parse_draft(raw_output)
-        draft = draft.model_copy(update={"claims": extract_supporting_quotes(draft.claims, context)})
-        dev_trace.log_parse(
-            success=parse_error is None,
-            claims_count=len(draft.claims),
-            quotes_count=sum(1 for c in draft.claims if c.supporting_quote),
-            error=parse_error,
-        )
-
-        if verify:
-            verification = verify_citations(draft, context)
-            confidence = score_confidence(retrieved_chunks, verification, context)
-        else:
-            verification = _EMPTY_VERIFICATION
-            confidence = ConfidenceScores(
-                retrieval=score_confidence(retrieved_chunks, _EMPTY_VERIFICATION, context).retrieval,
-                citations=0.0, coverage=0.0, overall=0.0,
-            )
-        dev_trace.log_verification(verification)
-        dev_trace.log_claim_diagnostics(_build_claim_diagnostics(verification, context))
-        dev_trace.log_confidence(confidence)
-
-        citations = sorted({cid for c in draft.claims for cid in c.citation_ids})
-        inline_ids, citations_ok = _inline_citation_drift(draft.answer, set(citations))
-
-        citation_status = CitationStatus.OK
-        if any(not cr.passed for cr in verification.claim_results):
-            citation_status = CitationStatus.VERIFICATION_FAILED
-        elif not citations_ok:
-            citation_status = CitationStatus.INLINE_DRIFT
-        dev_trace.log_citation_check(inline_ids, citations, citation_status.value)
-
-        structured_citations = build_citations(retrieved_chunks, self._filename_by_doc_id())
-        documents_used = len({r.chunk.document_id for r in retrieved_chunks})
-        dev_trace.log_summary(draft.answer, chunks_used=len(retrieved_chunks), documents_used=documents_used)
-        dev_trace.finish()
-
-        return RagAnswer(
-            answer=draft.answer, citations=citations, structured_citations=structured_citations,
-            confidence=confidence, verification=verification, citation_status=citation_status,
-            error=parse_error,
+        return self._finalize_answer(
+            raw_output, gen_latency_ms, retrieved_chunks, context, verify, dev_trace,
         )
 
     def answer_stream(self, question: str, max_chunks: int = 5, verify: bool = True):
@@ -385,6 +314,35 @@ class RagPipeline:
             "Streaming": True,
         })
 
+        retrieved_chunks, context, prompt = self._prepare_context(question, max_chunks, dev_trace)
+
+        chunks: list[str] = []
+        try:
+            gen_start = time.perf_counter()
+            for delta in self._generation_provider.generate_stream(prompt):
+                chunks.append(delta)
+                yield ("delta", delta)
+            gen_latency_ms = (time.perf_counter() - gen_start) * 1000
+        except Exception as e:
+            dev_trace.finish()
+            yield ("final", _error_answer(e))
+            return
+
+        raw_output = "".join(chunks)
+        yield (
+            "final",
+            self._finalize_answer(
+                raw_output, gen_latency_ms, retrieved_chunks, context, verify, dev_trace,
+            ),
+        )
+
+    def _prepare_context(self, question: str, max_chunks: int, dev_trace: RequestTrace):
+        """Shared pre-generation stage: decompose, retrieve, merge, prune, build prompt.
+
+        Returns ``(retrieved_chunks, context, prompt)``. Used identically by
+        ``answer`` and ``answer_stream`` -- any retrieval-side change belongs
+        here so the two paths can't drift.
+        """
         comparative = is_comparative_query(question)
         decompose_capture: dict = {}
         subqueries = (
@@ -417,26 +375,17 @@ class RagPipeline:
         context = build_context(retrieved_chunks)
         prompt = build_prompt(question, context, prompt_version=self._prompt_version)
         dev_trace.log_prompt(prompt)
+        return retrieved_chunks, context, prompt
 
-        chunks: list[str] = []
-        try:
-            gen_start = time.perf_counter()
-            for delta in self._generation_provider.generate_stream(prompt):
-                chunks.append(delta)
-                yield ("delta", delta)
-            gen_latency_ms = (time.perf_counter() - gen_start) * 1000
-        except Exception as e:
-            dev_trace.finish()
-            yield (
-                "final",
-                RagAnswer(
-                    answer=None, citations=[], confidence=_ZERO_CONFIDENCE,
-                    verification=_EMPTY_VERIFICATION, error=str(e),
-                ),
-            )
-            return
+    def _finalize_answer(
+        self, raw_output: str, gen_latency_ms: float, retrieved_chunks, context,
+        verify: bool, dev_trace: RequestTrace,
+    ) -> RagAnswer:
+        """Shared post-generation stage: parse, verify, score, assemble RagAnswer.
 
-        raw_output = "".join(chunks)
+        Counterpart to ``_prepare_context``; the only step the two public
+        entry points keep to themselves is the generate call itself.
+        """
         dev_trace.log_generation(
             type(self._generation_provider).__name__,
             getattr(self._generation_provider, "model_name", "unknown"),
@@ -479,13 +428,10 @@ class RagPipeline:
         dev_trace.log_summary(draft.answer, chunks_used=len(retrieved_chunks), documents_used=documents_used)
         dev_trace.finish()
 
-        yield (
-            "final",
-            RagAnswer(
-                answer=draft.answer, citations=citations, structured_citations=structured_citations,
-                confidence=confidence, verification=verification, citation_status=citation_status,
-                error=parse_error,
-            ),
+        return RagAnswer(
+            answer=draft.answer, citations=citations, structured_citations=structured_citations,
+            confidence=confidence, verification=verification, citation_status=citation_status,
+            error=parse_error,
         )
 
     def _filename_by_doc_id(self) -> dict[str, str]:

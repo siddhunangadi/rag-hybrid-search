@@ -2,7 +2,7 @@
 
 All models are frozen: snapshots and baselines are immutable records of a run.
 """
-from typing import Literal, Optional, Union
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -28,7 +28,7 @@ class Thresholds(_Frozen):
 
 class QuestionMetrics(_Frozen):
     status: str
-    objective_metrics: dict[str, Optional[Union[float, bool]]] = {}
+    objective_metrics: dict[str, float | bool | None] = {}
 
 
 class SnapshotSummary(_Frozen):

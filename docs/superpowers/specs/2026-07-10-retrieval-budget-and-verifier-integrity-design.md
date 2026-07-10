@@ -42,7 +42,7 @@ after `weighted_rrf` fusion and before calling `rerank_provider.rerank(...)`,
 slice `fused` (already sorted by `rrf_score`) to the top
 `self._rerank_fused_top_n`. `HybridRetriever.__init__` takes the new param.
 
-### 2. Retrieval budget trace logging
+### 2. Rerank candidate budget trace logging
 
 `RetrievalTrace` (models.py) gains fields: `fusion_candidates: int`,
 `budget_applied: int`, `sent_to_reranker: int`, `returned: int`.
@@ -70,8 +70,11 @@ generation latency, identical retrieval recall (dense_k/sparse_k
 unchanged), no change to the ranking algorithm itself.
 
 **Backward compatibility:** existing deployments unaffected unless
-`RAG_FUSED_TOP_N` is explicitly set. Default (8) preserves current
-rerank_top_n=5 behavior with no observable change beyond the latency win.
+`RAG_FUSED_TOP_N` is explicitly set. Default (`rerank_fused_top_n=8`) is
+expected to preserve retrieval quality for typical workloads while
+reducing reranker cost. Extremely recall-sensitive queries may observe
+different reranking outcomes if relevant candidates fall below the
+configured budget.
 
 **Risks:** a very small `fused_top_n` can cut recall (dropping a
 candidate the reranker would have promoted). Recommended default:
@@ -86,6 +89,9 @@ do not reassign — instead fall through to the existing failure path with
 a new `failure_reason="citation_reattribution_candidate"`. `passed=False`
 unconditionally in this branch. No `ClaimResult`/`Claim` schema change
 (reuses existing `failure_reason: str | None` field).
+
+This intentionally favors evidence integrity over answer recovery. The
+verifier's role is to validate model output, not repair it.
 
 ### 4. No silent inline-citation rewrite; `citation_status` enum
 
@@ -133,10 +139,10 @@ convenience, not a stored field (callers/UI compute it inline).
 `prompt_builder.py`, prompt v2 instructions: replace the vague "each
 factual assertion" guidance with an explicit rule:
 
-> Every sentence containing an independently verifiable fact MUST produce
-> exactly one claim object. If your answer contains multiple factual
-> assertions (e.g. "A because B."), split them into separate claims, each
-> with its own citation and supporting_quote.
+> Every independently verifiable factual assertion MUST produce exactly
+> one claim object. If your answer contains multiple factual assertions
+> (e.g. "A because B."), split them into separate claims, each with its
+> own citation and supporting_quote.
 
 Include a worked example in the prompt template showing a compound answer
 ("A because B.") split into 2 claim objects.
@@ -151,6 +157,7 @@ Claims generated : 4
 Claims verified   : 3
 Claims failed     : 1
 Verification Ratio: 75%
+Citation Status   : VERIFICATION_FAILED
 ```
 
 Computed from existing `VerificationReport.total_claims` /
@@ -190,3 +197,8 @@ produces a valid (if coarser) verification result.
   multi-query retrieval, separate design.
 - Wiring `verification_ratio` into `score_confidence` — noted as a
   natural follow-up in change #6, not bundled here.
+- Confidence scoring redesign more broadly.
+- Automatic regeneration/retry after a `VERIFICATION_FAILED` result —
+  now that the verifier can fail outright (change #3), a natural next
+  step is generation → verification → retry-once → return, instead of
+  returning the failed answer as-is. Not implemented here.

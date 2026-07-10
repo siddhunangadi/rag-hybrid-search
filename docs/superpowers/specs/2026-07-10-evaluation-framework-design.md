@@ -40,21 +40,22 @@ explicitly out of scope for this spec and will be its own follow-on design.
 ## Architecture
 
 ```
-questions.yaml
-      │
-      ▼
-RagPipeline (real, built via api/dependencies.build_container())
-      │
-      ▼
-RagAnswer + RequestTrace
-      │
-      ├───────────────┬────────────────┐
-      ▼               ▼                ▼
-Objective Metrics  Retrieval Record  Judge Provider
-      │               │                │
-      └───────┬───────┴────────────────┘
-              ▼
-      Evaluation Record (one per question)
+question
+     │
+     ▼
+ RagPipeline
+     │
+     ▼
+ RagAnswer + Trace
+     │
+     ├────────► Objective Metrics
+     │
+     ├────────► Retrieval Record
+     │
+     └────────► Judge Provider
+                  │
+                  ▼
+          Evaluation Record (one per question)
               │
     ┌─────────┼─────────┐
     ▼         ▼         ▼
@@ -129,7 +130,9 @@ distinction.
   "citations": ["d1", "d3"],
   "verification": { "...": "VerificationReport, as-is" },
   "confidence": { "...": "ConfidenceScores, as-is" },
-  "error": null,
+  "status": "success",
+  "error_type": null,
+  "error_message": null,
 
   "objective_metrics": {
     "latency_ms": 2830,
@@ -165,25 +168,44 @@ object already built during `answer()` — no new instrumentation, recorded
 but not scored. When something regresses, this tells you whether retrieval
 or generation changed.
 
+`status` is `"success"` or `"error"`; on `"error"`, `error_type` is a short
+machine-checkable code (e.g. `"generation_timeout"`, `"parse_error"`,
+`"provider_error"`) and `error_message` carries the human-readable detail.
+This replaces a bare `error: <string|null>` field so aggregation can group
+by `error_type` instead of string-matching messages.
+
 ### Report metadata (top of `report.json`, also rendered at the top of `report.html`)
 
 ```json
 {
+  "report_version": "1",
   "metadata": {
     "timestamp": "2026-07-10T16:40:00+05:30",
     "git_commit": "32e359a",
+    "package_version": "0.9.0",
     "generation_model": "...",
     "judge_model": "...",
-    "dense_k": 10,
-    "sparse_k": 10,
-    "rerank_top_n": 5,
-    "rerank_fused_top_n": 8,
     "prompt_version": "v2",
+    "judge_prompt_version": "v1",
+    "settings": { "...": "sanitized Settings.model_dump(), secrets excluded" },
     "corpus_version": "...",
     "dataset": { "name": "benchmark-v1", "version": "1.0.0" }
   }
 }
 ```
+
+`settings` is the full `Settings.model_dump()` from the container the
+pipeline was built from, with secret fields (`nvidia_api_key`,
+`gemini_api_key`, `debug_token`) stripped — this replaces hand-picking
+individual config fields (`dense_k`, `rerank_top_n`, ...) into metadata, so
+every future config addition is captured automatically without a report
+schema change. `report_version` is bumped whenever the report.json shape
+itself changes, independent of `dataset.version` (question set changes) and
+`package_version` (pip-installable version string, useful when running
+outside a git checkout — `git_commit` remains the primary identifier when
+available). `judge_prompt_version` tracks the judge prompt the same way
+`prompt_version` already tracks the generation prompt, since judge prompts
+evolve too.
 
 Pulled from the same `Settings`/container the pipeline is built from, plus
 `git rev-parse HEAD` and the dataset's own `dataset:` block. This is what
@@ -245,5 +267,8 @@ response, retrieval ids) for drill-down.
 - A second, independently-configured judge model (the seam exists; wiring
   a second real provider is deferred until it's actually needed).
 - Using the category taxonomy for adaptive routing (separate spec).
+- Multi-run variance per question (running each question N times to detect
+  answer instability) — valuable once model routing is in play, not needed
+  for a single-model Phase 1 baseline.
 - Any weighted/combined "overall score" — deliberately excluded; metrics
   stay independent to avoid disputes over weighting.

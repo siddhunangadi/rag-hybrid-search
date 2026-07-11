@@ -166,6 +166,22 @@ hosted sparse embedding model, `IndexManager`'s Pinecone path calls its
 this lands, `RAG_STORAGE_BACKEND=pinecone` fully replaces all three local
 stores with no partial state.
 
+**Prerequisite check, before writing any Phase 2 code:** confirm the actual
+Pinecone account/plan/region in use supports integrated inference for hosted
+sparse embedding models, and that the installed `pinecone` SDK version exposes
+that API — this is an assumption in this spec, not a verified fact. Do this
+check first as its own step; don't discover it mid-implementation.
+
+**Fallback if hosted sparse embedding isn't available:** generate sparse
+vectors client-side instead, using `pinecone-text`'s `BM25Encoder` fit on this
+project's corpus (the design this spec originally proposed before this
+revision) — everything else in this spec (two-index architecture, two
+separate queries preserving app-level `weighted_rrf`, `PineconeSparseIndex`'s
+external interface, Phase 3/4 structure) stays unchanged; only
+`PineconeSparseIndex`'s internals swap from "send raw text, Pinecone encodes"
+to "encode locally, send the sparse vector," and the encoder-refit question
+this spec eliminated comes back into scope.
+
 **Phase 3 — Validation.** Run `scripts/run_eval.py --compare-baseline` with a
 Pinecone-backed baseline vs. the existing Chroma/SQLite/BM25 baseline. Required
 before any default flips or old code is removed:

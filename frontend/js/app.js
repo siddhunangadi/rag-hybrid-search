@@ -26,6 +26,15 @@
     }
   }
 
+  async function pollJob(jobId, { intervalMs = 2000, maxAttempts = 150 } = {}) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const job = await Api.getJob(jobId);
+      if (job.status !== "processing") return job;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new Error(`Upload job ${jobId} did not finish after ${maxAttempts} polls`);
+  }
+
   function reportIndexResults(results) {
     for (const result of results) {
       if (result.status === "ready") {
@@ -50,8 +59,19 @@
     Ui.setIndexLoading(true);
     try {
       if (hasFiles) {
-        const response = await Api.uploadFiles(fileInput.files, "general");
-        reportIndexResults(response.results);
+        // /upload/async, not /upload: a large file (hundreds of chunks) makes
+        // hundreds of sequential Pinecone network calls during indexing --
+        // synchronous /upload blocks the event loop long enough to fail
+        // Render's health check and get the container restarted mid-request
+        // (found via a real Render deploy). /upload/async hands the work to
+        // a background thread and returns immediately with a job_id to poll.
+        const accepted = await Api.uploadFilesAsync(fileInput.files, "general");
+        const job = await pollJob(accepted.job_id);
+        if (job.status === "failed") {
+          Ui.toast(`Upload failed: ${job.error}`, "error");
+        } else {
+          reportIndexResults(job.result.results);
+        }
         fileInput.value = "";
       } else {
         const filename = filenameInput.value.trim();

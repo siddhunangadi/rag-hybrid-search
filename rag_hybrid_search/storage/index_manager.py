@@ -1,6 +1,10 @@
+import logging
+
 from rag_hybrid_search.models import Chunk, EmbeddingRecord, IndexStatus
 from rag_hybrid_search.storage.base import ChunkStore, VectorStore
 from rag_hybrid_search.storage.bm25_index import BM25Index
+
+logger = logging.getLogger(__name__)
 
 
 class IndexManager:
@@ -22,6 +26,11 @@ class IndexManager:
                 self.vector_store.upsert(chunk.chunk_id, record)
             self.rebuild_bm25_index()
         except Exception:
+            # Previously swallowed silently with no log at all -- meant a
+            # real vector_store/chunk_store write failure (Pinecone or
+            # otherwise) produced zero trace of what went wrong, only the
+            # generic FAILED status the caller sees.
+            logger.exception("IndexManager.index() failed")
             return IndexStatus.FAILED
         return IndexStatus.READY
 

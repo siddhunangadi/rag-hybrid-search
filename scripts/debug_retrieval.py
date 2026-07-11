@@ -37,7 +37,8 @@ from rag_hybrid_search.storage.bm25_index import BM25Index
 from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
 from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
-from rag_pipeline.context_builder import build_context
+from rag_hybrid_search.models import ChunkProvenance, ContextChunk
+from rag_pipeline.context_builder import ContextLayout, build_context
 from rag_pipeline.prompt_builder import build_prompt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -139,7 +140,14 @@ def run_local(doc_path: str, query: str) -> None:
         reranked, _trace = retriever.retrieve(query)
         _print_retrieved("RRF FUSION TOP-K (post-rerank)", reranked, "rrf_score")
 
-        context = build_context(sorted(reranked, key=lambda r: r.final_rank)[:5])
+        top_chunks = [
+            ContextChunk(
+                chunk=r,
+                provenance=ChunkProvenance(primary_subquery=0, all_subqueries=[0]),
+            )
+            for r in sorted(reranked, key=lambda r: r.final_rank)[:5]
+        ]
+        context = build_context(top_chunks, subqueries=[], layout=ContextLayout.FLAT)
         prompt = build_prompt(query, context)
         _print_header("EXACT PROMPT SENT TO GENERATION PROVIDER")
         print(prompt)

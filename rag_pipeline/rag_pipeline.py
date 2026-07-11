@@ -408,6 +408,7 @@ class RagPipeline:
             )
             for r in retrieved_chunks
         ]
+        dev_trace.log_provenance(context_chunks)
 
         layout = (
             ContextLayout.GROUPED

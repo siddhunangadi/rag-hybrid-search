@@ -268,6 +268,32 @@ def test_merge_multi_query_results_handles_missing_rerank_score():
     assert {r.chunk.chunk_id for r in merged} == {"c1", "c2"}
 
 
+def test_merge_returns_provenance_side_map():
+    chunk_a = make_retrieved_chunk("a", "text a", final_rank=1)
+    chunk_b = make_retrieved_chunk("b", "text b", final_rank=1)
+    chunk_c = make_retrieved_chunk("c", "text c", final_rank=1)
+
+    # subquery 0 retrieves a, b; subquery 1 retrieves b, c
+    results_per_query = [[chunk_a, chunk_b], [chunk_b, chunk_c]]
+
+    merged, provenance = _merge_multi_query_results(results_per_query)
+
+    assert provenance["a"].primary_subquery == 0
+    assert provenance["a"].all_subqueries == [0]
+    assert provenance["b"].primary_subquery == 0  # first seen under subquery 0
+    assert provenance["b"].all_subqueries == [0, 1]
+    assert provenance["c"].primary_subquery == 1
+    assert provenance["c"].all_subqueries == [1]
+    assert {r.chunk.chunk_id for r in merged} == {"a", "b", "c"}
+
+
+def test_merge_provenance_single_subquery():
+    chunk_a = make_retrieved_chunk("a", "text a", final_rank=1)
+    merged, provenance = _merge_multi_query_results([[chunk_a]])
+    assert provenance["a"].primary_subquery == 0
+    assert provenance["a"].all_subqueries == [0]
+
+
 class MultiQueryFakeRetriever:
     """Records every query it was asked to retrieve for, and returns a
     different chunk per distinct query string so tests can verify

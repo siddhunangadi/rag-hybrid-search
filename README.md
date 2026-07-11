@@ -4,6 +4,20 @@ A grounded, citation-verified RAG pipeline: hybrid (dense + sparse) retrieval wi
 
 **Diagrams:** [plain-English walkthrough](https://claude.ai/code/artifact/53c664d3-aaad-4f7b-8b59-a7b47b952869) (six flows, analogies, no engineering background needed) · [technical reference](https://claude.ai/code/artifact/872c6f00-3d13-4294-bd97-0700a18f52f4) (component diagram, request sequences, storage schema, RRF math)
 
+## What is this, in plain English?
+
+Imagine asking a very well-read assistant a question about a pile of documents — a policy handbook, a research paper, a contract. A normal chatbot might guess at the answer from general knowledge, or worse, make something up that sounds right but isn't in your documents at all.
+
+Lumen doesn't do that. It works more like a careful research assistant:
+
+1. **It reads your documents first.** Upload a PDF, Word doc, spreadsheet, or plain text file, and Lumen breaks it into small, searchable pieces.
+2. **When you ask a question, it goes looking for evidence.** It searches your documents two different ways at once — one search that understands *meaning* (so "vacation days" finds a passage about "annual leave"), and one that matches *exact keywords* — then combines and ranks the results, keeping only the passages that actually look relevant.
+3. **It only answers using what it found.** The assistant is told, in effect: "only use the passages I just handed you — don't use anything you already know." Every sentence in the answer points back to the specific passage it came from, like a footnote.
+4. **It double-checks its own work.** After generating an answer, Lumen goes back and verifies that each claim is genuinely backed by the quoted text — not just plausible-sounding. If a claim can't be backed up, it's flagged instead of silently trusted. It also gives you a confidence score, so you can tell at a glance whether the answer is well-grounded or shaky.
+5. **It handles comparison questions specially.** "How does policy A differ from policy B?" needs evidence from *multiple* places, not just the single best-matching passage. Lumen recognizes these questions, searches for each part separately, and makes sure the answer draws on evidence for every part of the comparison — not just whichever piece scored highest.
+
+In short: it's a Q&A tool for your own documents that shows its work and is built to say "I don't know" rather than make things up.
+
 ## Architecture
 
 ```mermaid

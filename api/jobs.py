@@ -13,11 +13,14 @@ production multi-instance deployment would need a shared job store (e.g.
 Redis) instead.
 """
 
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 JobState = Literal["processing", "ready", "failed"]
 
@@ -57,6 +60,12 @@ class JobStore:
             with self._lock:
                 self._jobs[job_id] = Job(job_id=job_id, state="ready", result=result)
         except Exception as e:  # noqa: BLE001 - surface any failure via job status, not a crash
+            # Previously only str(e) was kept (Job.error), no traceback was
+            # ever logged -- a real exception here was as invisible in
+            # Render's logs as an OOM kill, making the two impossible to
+            # tell apart. logger.exception() prints the full traceback so
+            # a real exception now leaves unambiguous evidence.
+            logger.exception("background ingestion job %s failed", job_id)
             with self._lock:
                 self._jobs[job_id] = Job(job_id=job_id, state="failed", error=str(e))
 

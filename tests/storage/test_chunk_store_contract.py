@@ -8,7 +8,20 @@ def _sqlite_store(tmp_path):
     return SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
 
 
-IMPLEMENTATIONS = [_sqlite_store]
+def _pinecone_chunk_store(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    patcher = patch("rag_hybrid_search.storage.pinecone_connection.Pinecone")
+    mock_pc_cls = patcher.start()
+    mock_pc_cls.return_value.Index.return_value = MagicMock()
+    from rag_hybrid_search.storage.pinecone_chunk_store import PineconeChunkStore
+    from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
+
+    client = PineconeConnection(api_key="k", index_name="idx")
+    return PineconeChunkStore(client, embedding_dimension=3)
+
+
+IMPLEMENTATIONS = [_sqlite_store, _pinecone_chunk_store]
 
 
 @pytest.mark.parametrize("make_store", IMPLEMENTATIONS)

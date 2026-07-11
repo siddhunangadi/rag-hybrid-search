@@ -42,3 +42,11 @@ class ChunkStore(ABC):
     @abstractmethod
     def all(self) -> Iterator[Chunk]:
         ...
+
+    @abstractmethod
+    def get_by_legal_metadata(self, filters: dict[str, str]) -> list[Chunk]:
+        ...
+
+    @abstractmethod
+    def get_document_summaries(self) -> list[dict]:
+        ...

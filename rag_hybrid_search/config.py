@@ -58,6 +58,17 @@ class Settings(BaseSettings):
 
     data_dir: str = "./data"
 
+    # Selects the storage backend for vectors/chunks/sparse index. "local" is
+    # unchanged Chroma+SQLite+BM25 behavior. "pinecone" is Phase 1/2 of the
+    # ephemeral-disk migration (see docs/superpowers/specs/2026-07-11-pinecone-storage-migration-design.md) --
+    # one flag, not three, since local and pinecone are the only two
+    # combinations this project runs.
+    storage_backend: Literal["local", "pinecone"] = "local"
+    pinecone_api_key: Optional[str] = None
+    pinecone_index_name: Optional[str] = None
+    pinecone_environment: Optional[str] = None
+    pinecone_sparse_index_name: Optional[str] = None
+
     @model_validator(mode="after")
     def _validate_weights_and_k(self) -> "Settings":
         if not (0.0 <= self.rrf_dense_weight <= 1.0):

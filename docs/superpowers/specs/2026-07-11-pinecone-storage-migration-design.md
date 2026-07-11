@@ -40,13 +40,16 @@ harness is **untouched** — none of it depends on storage internals.
 ## What changes vs. what doesn't
 
 **New:**
-- `PineconeVectorStore` — implements the existing `VectorStore` ABC (`upsert`,
-  `query`, `delete`), backed by Pinecone dense vectors.
-- `PineconeChunkStore` — implements the existing `ChunkStore` ABC (`get`,
+- `PineconeStore` — **one class implementing both** the `VectorStore` ABC
+  (`upsert`, `query`, `delete`) and the `ChunkStore` ABC (`get`,
   `get_by_document`, `get_document_hash`, `put`, `delete_by_document`, `all`),
-  backed by Pinecone metadata payloads (chunk text, heading, page,
-  `legal_metadata`, `document_id` stored per-vector; well under Pinecone's 40KB
-  per-vector metadata limit for typical chunk sizes).
+  backed by a single Pinecone index/client. Vector and metadata are already the
+  same Pinecone record — a separate `PineconeChunkStore` class would just wrap
+  the same underlying data a second time and hold a second client instance for
+  no capability gain. One class, one client, both ABCs satisfied. Metadata
+  payload: chunk text, heading, page, `legal_metadata`, `document_id` per
+  vector (well under Pinecone's 40KB per-vector metadata limit for typical
+  chunk sizes).
 - `PineconeSparseIndex` — new class matching `BM25Index`'s `search(query, k) ->
   list[tuple[chunk_id, score]]` return shape, so `SparseRetriever`'s dependency
   swaps with no interface change. Backed by `pinecone-text`'s `BM25Encoder`,
@@ -78,45 +81,65 @@ Pinecone queries** — one with only `vector` (dense) set, one with only
 `sparse_vector` set — each returning its own ranked `(chunk_id, score)` list,
 fused the same way as today.
 
-## Sparse encoder persistence
+## Sparse encoder: no persistence at all
 
-`BM25Encoder`'s fitted state (corpus IDF statistics) is small (KBs, not the
-multi-MB-at-scale problem a raw BM25 pickle can become) — persisted as a single
-JSON blob stored inside Pinecone itself, under a reserved sentinel vector ID in a
-dedicated namespace (not on local disk, so it survives redeploys same as
-everything else). Refit triggered on every `add_document`/`remove_document`
-operation, recomputing IDF over the full corpus. Acceptable for this project's
-corpus sizes; refit-on-every-write is explicitly noted as not scaling to a huge
-corpus (Deferred).
+Encoder state is configuration, not retrieval data — it doesn't belong stored
+inside the search index (a sentinel vector per namespace doesn't scale cleanly
+to multiple namespaces, e.g. `legal`/`finance`/`research`, and mixes concerns).
+For this project's corpus size (~449 chunks today), refitting `BM25Encoder` is
+trivial, so there is no persistence step at all: `PineconeSparseIndex` refits
+in-process by reading the current corpus from `PineconeStore.all()` — once at
+app startup, and again after every `add_document`/`remove_document` operation
+(mirrors today's `rebuild_bm25_index()` call pattern exactly, just held in
+memory instead of pickled to disk). A Render redeploy wiping in-process memory
+is fine — startup already re-reads the corpus from Pinecone and refits.
+Not persisting is explicitly the simplification here, not a gap: if the corpus
+ever grows large enough that refit-on-startup becomes slow, that's the trigger
+to revisit (Deferred).
 
-## Backend selection: feature flag, not a hard cutover
+## Backend selection: one flag, not a hard cutover
 
-New config: `RAG_VECTOR_STORE=chroma|pinecone` (default `chroma`, unchanged
-behavior for anyone not opting in), `RAG_CHUNK_STORE=sqlite|pinecone`,
-`RAG_SPARSE_INDEX=local|pinecone`, plus `RAG_PINECONE_API_KEY`,
-`RAG_PINECONE_INDEX_NAME`, `RAG_PINECONE_ENVIRONMENT` (new secrets, following the
-existing `RAG_`-prefixed convention). `api/dependencies.py`'s container
-construction branches on these flags to wire the chosen implementations behind
-the same `VectorStore`/`ChunkStore` ABCs — `IndexManager` and every retriever
-above it are unaware which backend is active.
+New config: **`RAG_STORAGE_BACKEND=local|pinecone`** (default `local`, unchanged
+behavior for anyone not opting in) — a single selector, not three independent
+flags. `local` and `pinecone` are the only two combinations this project will
+ever run (Chroma+SQLite+local-BM25 always travel together; Pinecone bundles
+vector+chunk+sparse together) — a `vector=pinecone, chunk=sqlite,
+sparse=pinecone` mixed config is never a real deployment target, so exposing
+three flags would only invite invalid combinations for no benefit. Plus new
+secrets `RAG_PINECONE_API_KEY`, `RAG_PINECONE_INDEX_NAME`,
+`RAG_PINECONE_ENVIRONMENT` (following the existing `RAG_`-prefixed convention).
+`api/dependencies.py`'s container construction branches once on
+`RAG_STORAGE_BACKEND` to wire either `(ChromaVectorStore, SQLite ChunkStore,
+BM25Index)` or `(PineconeStore, PineconeStore, PineconeSparseIndex)` behind the
+same ABCs — `IndexManager` and every retriever above it are unaware which
+backend is active.
+
+**Rollback:** if Pinecone-backed retrieval fails the Phase 3 evaluation gate or
+hits production issues after cutover, setting `RAG_STORAGE_BACKEND=local`
+restores the previous Chroma/SQLite/BM25 implementation with no code changes —
+this is the whole reason the flag exists as a phased toggle rather than a
+one-way rewrite.
 
 `IndexManager.index()` gets a conditional path: the Pinecone backend folds
-`chunk_store.put()` + `vector_store.upsert()` into `PineconeVectorStore.upsert()`
-storing both the vector and its metadata in one call (Pinecone's native model —
-vector and metadata are the same record), plus an incremental
-`PineconeSparseIndex` upsert instead of BM25's full-corpus rebuild-and-save.
+`chunk_store.put()` + `vector_store.upsert()` into one `PineconeStore.upsert()`
+call storing the vector and its metadata together (Pinecone's native model —
+vector and metadata are the same record), plus an in-process
+`PineconeSparseIndex` refit instead of BM25's pickle-to-disk save.
 The Chroma/SQLite/local-BM25 path is untouched.
 
 ## Phases
 
-**Phase 1 — Dense + metadata migration.** `PineconeVectorStore`,
-`PineconeChunkStore`, feature flag wiring, `IndexManager` conditional path for
-these two. Sparse retrieval keeps using local `BM25Index` regardless of the
-`RAG_VECTOR_STORE` flag (still ephemeral-disk-exposed, but isolated to Phase 2).
+**Phase 1 — Dense + metadata migration.** `PineconeStore` (vector + chunk
+methods), `RAG_STORAGE_BACKEND` flag wiring, `IndexManager` conditional path
+for vector+chunk. Sparse retrieval keeps using local `BM25Index` even when
+`RAG_STORAGE_BACKEND=pinecone` (still ephemeral-disk-exposed for sparse only,
+isolated to Phase 2 — a temporary, explicitly-labeled exception to the
+single-flag rule above, needed only during the migration itself).
 
 **Phase 2 — Sparse migration.** `PineconeSparseIndex`, `BM25Encoder`
-integration and encoder-state persistence, `IndexManager` incremental-upsert
-path for sparse, `RAG_SPARSE_INDEX` flag wired through.
+in-process refit-on-startup/refit-on-write, `IndexManager` refit call added to
+its Pinecone path. Once this lands, `RAG_STORAGE_BACKEND=pinecone` fully
+replaces all three local stores with no partial state.
 
 **Phase 3 — Validation.** Run `scripts/run_eval.py --compare-baseline` with a
 Pinecone-backed baseline vs. the existing Chroma/SQLite/BM25 baseline. Required
@@ -135,16 +158,17 @@ local persistence config — only after Phase 3 passes in production.
 
 ## Testing
 
-- `PineconeVectorStore`/`PineconeChunkStore`/`PineconeSparseIndex`: unit tests
-  against a mocked Pinecone client (no live network calls in the suite),
-  verifying each satisfies its ABC's contract identically to
-  `ChromaVectorStore`/SQLite `ChunkStore`/`BM25Index`'s existing test coverage.
+- `PineconeStore`/`PineconeSparseIndex`: unit tests against a mocked Pinecone
+  client (no live network calls in the suite), verifying `PineconeStore`
+  satisfies both the `VectorStore` and `ChunkStore` ABC contracts identically
+  to `ChromaVectorStore`/SQLite `ChunkStore`'s existing test coverage, and
+  `PineconeSparseIndex` matches `BM25Index`'s.
 - `IndexManager`'s conditional path: parametrized over both backends, same
   assertions for `index()`/`remove_document()`/`rebuild_all()` behavior.
 - Integration: `DenseRetriever`/`SparseRetriever`/`HybridRetriever` against
-  `PineconeVectorStore`/`PineconeChunkStore`/`PineconeSparseIndex` — no changes
-  needed to these retrievers' own tests beyond swapping which store fixture
-  they're constructed with (same interface).
+  `PineconeStore`/`PineconeSparseIndex` — no changes needed to these
+  retrievers' own tests beyond swapping which store fixture they're
+  constructed with (same interface).
 - Live-provider test (skipped by default, matching the project's existing
   `tests/rag_pipeline/test_live_providers.py` pattern) exercising a real
   Pinecone index for one end-to-end round trip.

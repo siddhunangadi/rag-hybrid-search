@@ -13,7 +13,17 @@ def _table_to_text(table: list[list[str | None]]) -> str:
 
 
 def _extract_with_pdfplumber(path: str) -> str | None:
-    """Try pdfplumber (table-aware). Returns None if it can't parse the file at all."""
+    """Try pdfplumber (table-aware). Returns None if it can't parse the file at all.
+
+    page.flush_cache() after each page: pdfplumber's Page objects cache
+    decoded layout/image data (chars, lines, rects, images) and don't release
+    it while iterating pdf.pages, so without this a real multi-page PDF holds
+    every page's decoded data live simultaneously -- confirmed via Render RSS
+    instrumentation to cost ~250MB on a real document, the dominant memory
+    cost in the whole ingest path (embedding response parsing, by contrast,
+    cost ~8MB for the same document). flush_cache() is pdfplumber's own
+    documented fix for this exact memory-growth pattern.
+    """
     with pdfplumber.open(path) as pdf:
         if not pdf.pages:
             return None
@@ -23,6 +33,7 @@ def _extract_with_pdfplumber(path: str) -> str | None:
             tables = page.extract_tables(table_settings={"text_x_tolerance": 1})
             table_blocks = [_table_to_text(table) for table in tables if table]
             pages_text.append("\n\n".join([text, *table_blocks]).strip())
+            page.flush_cache()
         return "\n".join(pages_text)
 
 

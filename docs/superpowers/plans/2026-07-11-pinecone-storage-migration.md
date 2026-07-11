@@ -13,11 +13,11 @@ leaving `DenseRetriever`/`SparseRetriever`/`HybridRetriever`/`weighted_rrf`/the
 reranker/the entire generation pipeline untouched — fixing Render's
 ephemeral-disk redeploy problem without changing retrieval behavior.
 
-**Architecture:** A small `PineconeClient` wrapper holds one Pinecone SDK
+**Architecture:** A small `PineconeConnection` wrapper holds one Pinecone SDK
 index connection. `PineconeVectorStore` and `PineconeChunkStore` are two
 separate classes, each implementing exactly one ABC (`VectorStore`,
 `ChunkStore` respectively), both constructed from the same shared
-`PineconeClient` instance — preserving the existing interface-segregation
+`PineconeConnection` instance — preserving the existing interface-segregation
 design rather than merging responsibilities into one class. `PineconeSparseIndex`
 matches `BM25Index`'s `search(query, k)` shape against a separate Pinecone
 index using a hosted sparse embedding model — verified as a real
@@ -170,10 +170,10 @@ git commit -m "feat: make ChunkStore ABC declare its full real contract"
 
 ---
 
-### Task 2: `PineconeClient`, `PineconeVectorStore`, `PineconeChunkStore`
+### Task 2: `PineconeConnection`, `PineconeVectorStore`, `PineconeChunkStore`
 
 **Files:**
-- Create: `rag_hybrid_search/storage/pinecone_client.py`
+- Create: `rag_hybrid_search/storage/pinecone_connection.py`
 - Create: `rag_hybrid_search/storage/pinecone_vector_store.py`
 - Create: `rag_hybrid_search/storage/pinecone_chunk_store.py`
 - Test: `tests/storage/test_pinecone_vector_store.py`,
@@ -184,14 +184,15 @@ git commit -m "feat: make ChunkStore ABC declare its full real contract"
 - Consumes: `VectorStore`, `ChunkStore` ABCs (Task 1) from
   `rag_hybrid_search.storage.base`; `Chunk`, `EmbeddingRecord` from
   `rag_hybrid_search.models`.
-- Produces: `PineconeClient(api_key: str, index_name: str, environment:
+- Produces: `PineconeConnection(api_key: str, index_name: str, environment:
   str | None = None)` — thin wrapper exposing `.index` (the raw Pinecone SDK
   index handle), shared by both store classes so there's exactly one
   connection per Pinecone index, not one per store. `PineconeVectorStore(client:
-  PineconeClient)` implementing only `VectorStore`
+  PineconeConnection)` implementing only `VectorStore`
   (`upsert(chunk_id, embedding_record)`, `query(embedding, k) ->
   list[tuple[str, float]]`, `delete(chunk_ids: list[str])`).
-  `PineconeChunkStore(client: PineconeClient)` implementing only `ChunkStore`
+  `PineconeChunkStore(client: PineconeConnection, embedding_dimension: int)`
+  implementing only `ChunkStore`
   (`get(chunk_id) -> Optional[Chunk]`, `get_by_document(document_id) ->
   list[Chunk]`, `get_document_hash(source_path) -> Optional[str]`,
   `put(chunk, source_path=None)`, `delete_by_document(document_id)`,
@@ -241,7 +242,7 @@ import pytest
 
 from rag_hybrid_search.models import EmbeddingRecord
 from rag_hybrid_search.storage.base import VectorStore
-from rag_hybrid_search.storage.pinecone_client import PineconeClient
+from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 from rag_hybrid_search.storage.pinecone_vector_store import PineconeVectorStore
 
 
@@ -254,10 +255,10 @@ def _embedding_record(chunk_id="c1"):
 
 @pytest.fixture
 def mock_client():
-    with patch("rag_hybrid_search.storage.pinecone_client.Pinecone") as mock_pc_cls:
+    with patch("rag_hybrid_search.storage.pinecone_connection.Pinecone") as mock_pc_cls:
         mock_index = MagicMock()
         mock_pc_cls.return_value.Index.return_value = mock_index
-        client = PineconeClient(api_key="k", index_name="idx")
+        client = PineconeConnection(api_key="k", index_name="idx")
         yield client, mock_index
 
 
@@ -267,13 +268,15 @@ def test_implements_vector_store(mock_client):
     assert isinstance(store, VectorStore)
 
 
-def test_upsert_sends_vector_only(mock_client):
+def test_upsert_updates_vector_values_on_existing_record(mock_client):
+    """upsert() uses index.update(), not index.upsert() -- the record
+    already exists by the time this runs (PineconeChunkStore.put() always
+    runs first per the real ingestion order), and update() leaves that
+    record's metadata untouched."""
     client, mock_index = mock_client
     store = PineconeVectorStore(client)
     store.upsert("c1", _embedding_record())
-    mock_index.upsert.assert_called_once_with(
-        vectors=[{"id": "c1", "values": [0.1, 0.2, 0.3]}],
-    )
+    mock_index.update.assert_called_once_with(id="c1", values=[0.1, 0.2, 0.3])
 
 
 def test_query_returns_chunk_id_score_pairs(mock_client):
@@ -298,12 +301,12 @@ def test_delete(mock_client):
 
 def test_shares_one_client_across_two_stores(mock_client):
     """Both PineconeVectorStore and PineconeChunkStore, constructed from the
-    same PineconeClient, must issue calls against the same underlying index
+    same PineconeConnection, must issue calls against the same underlying index
     object -- not open a second connection."""
     client, mock_index = mock_client
     from rag_hybrid_search.storage.pinecone_chunk_store import PineconeChunkStore
     vector_store = PineconeVectorStore(client)
-    chunk_store = PineconeChunkStore(client)
+    chunk_store = PineconeChunkStore(client, embedding_dimension=3)
     assert vector_store._index is chunk_store._index is mock_index
 ```
 
@@ -316,7 +319,7 @@ import pytest
 from rag_hybrid_search.models import Chunk
 from rag_hybrid_search.storage.base import ChunkStore
 from rag_hybrid_search.storage.pinecone_chunk_store import PineconeChunkStore
-from rag_hybrid_search.storage.pinecone_client import PineconeClient
+from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 
 
 def _chunk(chunk_id="c1", document_id="d1", chunk_index=0, text="hello world",
@@ -330,29 +333,34 @@ def _chunk(chunk_id="c1", document_id="d1", chunk_index=0, text="hello world",
 
 @pytest.fixture
 def mock_client():
-    with patch("rag_hybrid_search.storage.pinecone_client.Pinecone") as mock_pc_cls:
+    with patch("rag_hybrid_search.storage.pinecone_connection.Pinecone") as mock_pc_cls:
         mock_index = MagicMock()
         mock_pc_cls.return_value.Index.return_value = mock_index
-        client = PineconeClient(api_key="k", index_name="idx")
+        client = PineconeConnection(api_key="k", index_name="idx")
         yield client, mock_index
 
 
 def test_implements_chunk_store(mock_client):
     client, _ = mock_client
-    store = PineconeChunkStore(client)
+    store = PineconeChunkStore(client, embedding_dimension=3)
     assert isinstance(store, ChunkStore)
 
 
-def test_put_stores_metadata_without_touching_vector_values(mock_client):
+def test_put_creates_record_with_placeholder_vector(mock_client):
+    """put() runs first in the real ingestion order (before any vector
+    exists), so it must upsert() a full record -- a placeholder zero-vector
+    of the configured dimension plus the real metadata -- not update() a
+    record that doesn't exist yet."""
     client, mock_index = mock_client
-    mock_index.fetch.return_value = MagicMock(vectors={})
-    store = PineconeChunkStore(client)
+    store = PineconeChunkStore(client, embedding_dimension=3)
     store.put(_chunk(), source_path="doc.md")
-    mock_index.update.assert_called_once()
-    call_kwargs = mock_index.update.call_args.kwargs
-    assert call_kwargs["id"] == "c1"
-    assert call_kwargs["set_metadata"]["document_id"] == "d1"
-    assert call_kwargs["set_metadata"]["text"] == "hello world"
+    mock_index.upsert.assert_called_once()
+    call_kwargs = mock_index.upsert.call_args.kwargs
+    vectors = call_kwargs["vectors"]
+    assert vectors[0]["id"] == "c1"
+    assert vectors[0]["values"] == [0.0, 0.0, 0.0]
+    assert vectors[0]["metadata"]["document_id"] == "d1"
+    assert vectors[0]["metadata"]["text"] == "hello world"
     assert call_kwargs["set_metadata"]["source_path"] == "doc.md"
 
 
@@ -367,7 +375,7 @@ def test_get_by_chunk_id_reconstructs_chunk(mock_client):
             })
         }
     )
-    store = PineconeChunkStore(client)
+    store = PineconeChunkStore(client, embedding_dimension=3)
     chunk = store.get("c1")
     assert chunk is not None
     assert chunk.chunk_id == "c1"
@@ -378,13 +386,13 @@ def test_get_by_chunk_id_reconstructs_chunk(mock_client):
 def test_get_missing_chunk_returns_none(mock_client):
     client, mock_index = mock_client
     mock_index.fetch.return_value = MagicMock(vectors={})
-    store = PineconeChunkStore(client)
+    store = PineconeChunkStore(client, embedding_dimension=3)
     assert store.get("missing") is None
 
 
 def test_delete_by_document(mock_client):
     client, mock_index = mock_client
-    store = PineconeChunkStore(client)
+    store = PineconeChunkStore(client, embedding_dimension=3)
     store.delete_by_document("d1")
     mock_index.delete.assert_called_once_with(
         filter={"document_id": {"$eq": "d1"}},
@@ -401,10 +409,10 @@ def test_delete_by_document(mock_client):
 Run: `uv run python -m pytest tests/storage/test_pinecone_vector_store.py tests/storage/test_pinecone_chunk_store.py -v`
 Expected: FAIL — `ModuleNotFoundError` (none of the three new modules exist yet).
 
-- [ ] **Step 5: Write `PineconeClient`**
+- [ ] **Step 5: Write `PineconeConnection`**
 
 ```python
-# rag_hybrid_search/storage/pinecone_client.py
+# rag_hybrid_search/storage/pinecone_connection.py
 """Shared Pinecone index connection, used by both PineconeVectorStore and
 PineconeChunkStore so they operate against one connection per index, not one
 each -- vector and chunk-metadata storage are two ABCs/two classes here, but
@@ -416,7 +424,7 @@ from typing import Optional
 from pinecone import Pinecone
 
 
-class PineconeClient:
+class PineconeConnection:
     def __init__(self, api_key: str, index_name: str, environment: Optional[str] = None):
         self._client = Pinecone(api_key=api_key)
         self.index = self._client.Index(index_name)
@@ -428,15 +436,22 @@ class PineconeClient:
 # rag_hybrid_search/storage/pinecone_vector_store.py
 from rag_hybrid_search.models import EmbeddingRecord
 from rag_hybrid_search.storage.base import VectorStore
-from rag_hybrid_search.storage.pinecone_client import PineconeClient
+from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 
 
 class PineconeVectorStore(VectorStore):
-    def __init__(self, client: PineconeClient):
+    def __init__(self, client: PineconeConnection):
         self._index = client.index
 
     def upsert(self, chunk_id: str, embedding_record: EmbeddingRecord) -> None:
-        self._index.upsert(vectors=[{"id": chunk_id, "values": embedding_record.embedding}])
+        # index.update(), not index.upsert(): the real ingestion order
+        # (rag_hybrid_search/ingestion/pipeline.py:101,104) always calls
+        # chunk_store.put() before vector_store.upsert() for a given chunk,
+        # so by the time this runs, PineconeChunkStore.put() has already
+        # created the record (with a placeholder vector -- see
+        # PineconeChunkStore.put() below). update() sets the real vector
+        # values on that existing record without touching its metadata.
+        self._index.update(id=chunk_id, values=embedding_record.embedding)
 
     def query(self, embedding: list[float], k: int) -> list[tuple[str, float]]:
         result = self._index.query(vector=embedding, top_k=k, include_metadata=False)
@@ -446,21 +461,25 @@ class PineconeVectorStore(VectorStore):
         self._index.delete(ids=chunk_ids)
 ```
 
-Note: `upsert` here only sets vector values, using Pinecone's partial
-`update`/`upsert` semantics so it doesn't clobber metadata written separately
-by `PineconeChunkStore.put()` on the same record — confirm against the real
-SDK whether `index.upsert(vectors=[{"id":..., "values":...}])` (no
-`metadata` key) leaves existing metadata untouched or wipes it; if it wipes
-it, switch this to `index.update(id=chunk_id, values=embedding_record.embedding)`
-instead, matching the `update`-based approach `PineconeChunkStore.put` uses
-below for the same reason.
+**First-write ordering, resolved explicitly (not left to implementation
+time):** `PineconeChunkStore.put()` always runs first for a given chunk_id
+and must be able to create the Pinecone record from nothing — so it
+`upsert()`s with a placeholder vector (all-zero, correct dimension).
+`PineconeVectorStore.upsert()` always runs second and uses `index.update()`
+to set the real vector values on the now-existing record, leaving the
+metadata `put()` already wrote untouched. This ordering is guaranteed by
+the real ingestion pipeline, not assumed — if a future caller ever calls
+`vector_store.upsert()` for a chunk_id that was never `put()` first,
+`index.update()` will fail/no-op depending on SDK version; that's a
+deliberate signal something upstream broke the expected order, not a case
+to silently handle here.
 
 - [ ] **Step 7: Write `PineconeChunkStore`**
 
 ```python
 # rag_hybrid_search/storage/pinecone_chunk_store.py
 """PineconeChunkStore: metadata-only operations against the same Pinecone
-index PineconeVectorStore writes vectors to (shared via PineconeClient).
+index PineconeVectorStore writes vectors to (shared via PineconeConnection).
 
 Metadata sentinels: Optional[str] fields (heading, source_path) store "" for
 None, Optional[int] (page) stores -1 for None -- both reconstructed back to
@@ -471,12 +490,21 @@ from typing import Iterator, Optional
 
 from rag_hybrid_search.models import Chunk
 from rag_hybrid_search.storage.base import ChunkStore
-from rag_hybrid_search.storage.pinecone_client import PineconeClient
+from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 
 _LEGAL_FILTER_KEYS = {
     "regulation", "version", "jurisdiction", "article", "section",
     "clause", "document_type",
 }
+
+
+# Pinecone's per-vector metadata limit is 40KB (serialized). Chunk text is
+# almost all of this payload's size -- everything else here is short fields.
+_MAX_METADATA_BYTES = 40 * 1024
+
+
+class MetadataTooLargeError(ValueError):
+    pass
 
 
 def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
@@ -501,6 +529,15 @@ def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
             "legal_clause": lm.clause or "",
             "legal_document_type": lm.document_type or "",
         })
+    import json
+    serialized_size = len(json.dumps(metadata).encode("utf-8"))
+    if serialized_size > _MAX_METADATA_BYTES:
+        raise MetadataTooLargeError(
+            f"chunk {chunk.chunk_id!r} metadata is {serialized_size} bytes, "
+            f"over Pinecone's {_MAX_METADATA_BYTES}-byte per-vector limit -- "
+            f"reduce chunk_size in Settings, since this project's chunker "
+            f"controls chunk text length directly."
+        )
     return metadata
 
 
@@ -518,14 +555,31 @@ def _metadata_to_chunk(chunk_id: str, metadata: dict) -> Chunk:
 
 
 class PineconeChunkStore(ChunkStore):
-    def __init__(self, client: PineconeClient):
+    def __init__(self, client: PineconeConnection, embedding_dimension: int):
         self._index = client.index
+        # Needed only for put()'s placeholder-vector creation path below --
+        # confirm this matches the real embedding provider's output
+        # dimension (e.g. NVIDIA embedding model's dimension) when wiring
+        # this up in Task 3, not an arbitrary guess.
+        self._embedding_dimension = embedding_dimension
 
     def put(self, chunk: Chunk, source_path: Optional[str] = None) -> None:
-        # update() (not upsert()) so this never touches vector values --
-        # PineconeVectorStore.upsert() writes those independently, same
-        # record, same index, via the shared client.
-        self._index.update(id=chunk.chunk_id, set_metadata=_chunk_to_metadata(chunk, source_path))
+        # upsert(), not update(): the real ingestion order
+        # (rag_hybrid_search/ingestion/pipeline.py:101,104) always calls
+        # chunk_store.put() BEFORE vector_store.upsert() for a given chunk,
+        # so this is usually the first write for a new chunk_id -- the
+        # record may not exist yet, and index.update() would fail/no-op on
+        # a nonexistent id. upsert() with a placeholder zero-vector creates
+        # the record (or overwrites metadata on an existing one, e.g. a
+        # re-ingested document), and PineconeVectorStore.upsert() -- called
+        # second -- then update()s in the real vector values without
+        # touching this metadata.
+        metadata = _chunk_to_metadata(chunk, source_path)
+        self._index.upsert(vectors=[{
+            "id": chunk.chunk_id,
+            "values": [0.0] * self._embedding_dimension,
+            "metadata": metadata,
+        }])
 
     def get(self, chunk_id: str) -> Optional[Chunk]:
         result = self._index.fetch(ids=[chunk_id])
@@ -587,13 +641,13 @@ Add to `tests/storage/test_chunk_store_contract.py`'s `IMPLEMENTATIONS` list:
 ```python
 def _pinecone_chunk_store(tmp_path):
     from unittest.mock import MagicMock, patch
-    patcher = patch("rag_hybrid_search.storage.pinecone_client.Pinecone")
+    patcher = patch("rag_hybrid_search.storage.pinecone_connection.Pinecone")
     mock_pc_cls = patcher.start()
     mock_pc_cls.return_value.Index.return_value = MagicMock()
     from rag_hybrid_search.storage.pinecone_chunk_store import PineconeChunkStore
-    from rag_hybrid_search.storage.pinecone_client import PineconeClient
-    client = PineconeClient(api_key="k", index_name="idx")
-    return PineconeChunkStore(client)
+    from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
+    client = PineconeConnection(api_key="k", index_name="idx")
+    return PineconeChunkStore(client, embedding_dimension=3)
 
 
 IMPLEMENTATIONS = [_sqlite_store, _pinecone_chunk_store]
@@ -605,8 +659,8 @@ Expected: all pass for both implementations.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add pyproject.toml uv.lock rag_hybrid_search/storage/pinecone_client.py rag_hybrid_search/storage/pinecone_vector_store.py rag_hybrid_search/storage/pinecone_chunk_store.py tests/storage/test_pinecone_vector_store.py tests/storage/test_pinecone_chunk_store.py tests/storage/test_chunk_store_contract.py
-git commit -m "feat: add PineconeVectorStore and PineconeChunkStore over a shared PineconeClient"
+git add pyproject.toml uv.lock rag_hybrid_search/storage/pinecone_connection.py rag_hybrid_search/storage/pinecone_vector_store.py rag_hybrid_search/storage/pinecone_chunk_store.py tests/storage/test_pinecone_vector_store.py tests/storage/test_pinecone_chunk_store.py tests/storage/test_chunk_store_contract.py
+git commit -m "feat: add PineconeVectorStore and PineconeChunkStore over a shared PineconeConnection"
 ```
 
 ---
@@ -620,7 +674,7 @@ git commit -m "feat: add PineconeVectorStore and PineconeChunkStore over a share
   create it)
 
 **Interfaces:**
-- Consumes: `PineconeClient`, `PineconeVectorStore`, `PineconeChunkStore` (Task 2).
+- Consumes: `PineconeConnection`, `PineconeVectorStore`, `PineconeChunkStore` (Task 2).
 - Produces: `Settings.storage_backend: Literal["local", "pinecone"] = "local"`,
   `Settings.pinecone_api_key: Optional[str] = None`,
   `Settings.pinecone_index_name: Optional[str] = None`,
@@ -649,7 +703,7 @@ def test_build_container_wires_pinecone_backend(tmp_path):
         data_dir=str(tmp_path), storage_backend="pinecone",
         pinecone_api_key="k", pinecone_index_name="idx",
     )
-    with patch("api.dependencies.PineconeClient") as mock_client_cls, \
+    with patch("api.dependencies.PineconeConnection") as mock_client_cls, \
          patch("api.dependencies.PineconeVectorStore") as mock_vs_cls, \
          patch("api.dependencies.PineconeChunkStore") as mock_cs_cls:
         mock_client_cls.return_value = MagicMock()
@@ -670,7 +724,7 @@ def test_build_container_wires_pinecone_backend(tmp_path):
 Run: `uv run python -m pytest tests/api/test_dependencies.py -v`
 Expected: first test passes (matches current default behavior), second FAILS
 — `storage_backend` isn't a recognized `Settings` field yet (Pydantic extra-field
-error) and `PineconeClient`/`PineconeVectorStore`/`PineconeChunkStore` aren't
+error) and `PineconeConnection`/`PineconeVectorStore`/`PineconeChunkStore` aren't
 imported in `api.dependencies`.
 
 - [ ] **Step 3: Add config fields**
@@ -691,7 +745,7 @@ existing `provider`/`nvidia_api_key` fields):
 In `api/dependencies.py`, add the imports near the existing storage imports:
 
 ```python
-from rag_hybrid_search.storage.pinecone_client import PineconeClient
+from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 from rag_hybrid_search.storage.pinecone_vector_store import PineconeVectorStore
 from rag_hybrid_search.storage.pinecone_chunk_store import PineconeChunkStore
 ```
@@ -702,13 +756,15 @@ Replace the block from `chunk_store = SqliteChunkStore(...)` through
 
 ```python
     if settings.storage_backend == "pinecone":
-        pinecone_client = PineconeClient(
+        pinecone_connection = PineconeConnection(
             api_key=settings.pinecone_api_key,
             index_name=settings.pinecone_index_name,
             environment=settings.pinecone_environment,
         )
-        vector_store = PineconeVectorStore(pinecone_client)
-        chunk_store = PineconeChunkStore(pinecone_client)
+        vector_store = PineconeVectorStore(pinecone_connection)
+        chunk_store = PineconeChunkStore(
+            pinecone_connection, embedding_dimension=embedding_provider.dimension,
+        )
         bm25_index = BM25Index(index_path=str(data_dir / _BM25_INDEX_FILENAME))
         bm25_index.load()  # Phase 1: sparse still local even on pinecone backend; Task 6 replaces this line
     else:
@@ -720,7 +776,7 @@ Replace the block from `chunk_store = SqliteChunkStore(...)` through
 ```
 
 Note `chunk_store` and `vector_store` are now two distinct objects sharing
-`pinecone_client` under the hood — not the same object twice, unlike an
+`pinecone_connection` under the hood — not the same object twice, unlike an
 earlier draft of this plan. `IndexManager` and every retriever above it
 still only see the `ChunkStore`/`VectorStore` ABCs, unaware two Pinecone
 wrapper classes exist.

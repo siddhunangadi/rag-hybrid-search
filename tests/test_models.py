@@ -107,3 +107,19 @@ def test_retrieval_trace_total_latency():
         rerank_latency_ms=3.5,
     )
     assert trace.total_latency_ms == 7.0
+
+
+def test_retrieval_trace_budget_fields_default_to_zero():
+    trace = RetrievalTrace()
+    assert trace.fusion_candidates == 0
+    assert trace.budget_applied == 0
+    assert trace.sent_to_reranker == 0
+    assert trace.returned == 0
+
+
+def test_retrieval_trace_budget_fields_roundtrip():
+    trace = RetrievalTrace(fusion_candidates=17, budget_applied=8, sent_to_reranker=8, returned=5)
+    assert trace.fusion_candidates == 17
+    assert trace.budget_applied == 8
+    assert trace.sent_to_reranker == 8
+    assert trace.returned == 5

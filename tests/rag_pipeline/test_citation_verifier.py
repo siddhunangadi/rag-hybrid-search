@@ -72,12 +72,13 @@ def test_multiple_claims_mixed_pass_fail():
     assert report.failed_claims == 1
 
 
-def test_misattributed_citation_id_is_corrected_when_quote_matches_another_doc():
+def test_misattributed_citation_id_is_flagged_not_silently_corrected():
     """The model sometimes copies a verbatim quote correctly but tags it
-    with the wrong doc id (e.g. always citing d1 out of habit). If the
-    quote is a strong match for a *different* doc in context, re-attribute
-    the citation to that doc instead of failing a claim whose quote is
-    actually verbatim and present."""
+    with the wrong doc id. The verifier detects a better-matching doc but
+    must never rewrite citation_ids -- it validates model output, it
+    doesn't repair it. The claim fails with a distinct reason so the
+    caller can decide what to do, and citation_ids stay exactly what the
+    model wrote."""
     context = PromptContext(
         text=(
             "[d1]\nThe cafeteria serves lunch from 12pm to 2pm daily.\n\n"
@@ -91,9 +92,11 @@ def test_misattributed_citation_id_is_corrected_when_quote_matches_another_doc()
         supporting_quote="20 days of paid annual leave",
     )
     report = verify_citations(make_draft([claim]), context)
-    assert report.verified_claims == 1
-    assert report.claim_results[0].passed is True
-    assert report.claim_results[0].claim.citation_ids == ["d2"]
+    assert report.verified_claims == 0
+    assert report.failed_claims == 1
+    assert report.claim_results[0].passed is False
+    assert report.claim_results[0].failure_reason == "citation_reattribution_candidate"
+    assert report.claim_results[0].claim.citation_ids == ["d1"]
 
 
 def test_quote_matches_despite_mid_sentence_pdf_linewrap_in_chunk():
@@ -139,6 +142,72 @@ def test_quote_matches_when_chunk_text_contains_an_internal_blank_line():
     report = verify_citations(make_draft([claim]), context)
     assert report.claim_results[0].passed is True
     assert report.claim_results[0].quote_match_score >= QUOTE_MATCH_THRESHOLD
+
+
+def test_quote_crossing_d1_to_d2_boundary_fails_with_explicit_reason():
+    """A quote concatenated from the end of d1's text and the start of d2's
+    text scores low against either chunk alone (it's not fully present in
+    either), but high against the whole concatenated context (it does
+    exist there, split across the boundary). That combination is the
+    fingerprint of a cross-chunk quote -- verify_citations must fail it
+    with a distinct reason from a genuine hallucination."""
+    context = PromptContext(
+        text=(
+            "[d1]\nThe most critical insight is that granularity dominates.\n\n"
+            "[d2]\nWhile RQ2 establishes that structural detection is effective."
+        ),
+        doc_id_map={"d1": "chunk-1", "d2": "chunk-2"},
+    )
+    claim = Claim(
+        text="Granularity dominates and RQ2 establishes detection is effective",
+        citation_ids=["d1"],
+        supporting_quote="The most critical insight is that granularity dominates. While RQ2 establishes that structural detection is effective.",
+    )
+    report = verify_citations(make_draft([claim]), context)
+    assert report.claim_results[0].passed is False
+    assert report.claim_results[0].failure_reason == "quote_spans_multiple_chunks"
+
+
+def test_hallucinated_quote_not_present_anywhere_fails_with_distinct_reason():
+    """A quote that doesn't exist in the cited chunk OR anywhere else in
+    context is a plain hallucination, not a cross-chunk copy -- these two
+    failure modes must be distinguishable."""
+    claim = Claim(
+        text="Employees get free lunch",
+        citation_ids=["d1"],
+        supporting_quote="completely invented text that appears nowhere",
+    )
+    report = verify_citations(make_draft([claim]), _CONTEXT)
+    assert report.claim_results[0].passed is False
+    assert report.claim_results[0].failure_reason == "quote_not_found"
+
+
+def test_wrong_citation_id_fails_with_hallucinated_reason():
+    claim = Claim(
+        text="Employees get unlimited leave",
+        citation_ids=["d99"],
+        supporting_quote="unlimited leave",
+    )
+    report = verify_citations(make_draft([claim]), _CONTEXT)
+    assert report.claim_results[0].failure_reason == "hallucinated_citation_id"
+
+
+def test_quote_containing_other_citation_marker_fails_immediately():
+    """If the quote itself still contains a literal '[d2]' marker while the
+    claim cites d1, that's proof of a cross-boundary copy that didn't even
+    strip the marker -- fail without needing to score it."""
+    context = PromptContext(
+        text="[d1]\nFirst chunk text.\n\n[d2]\nSecond chunk text.",
+        doc_id_map={"d1": "chunk-1", "d2": "chunk-2"},
+    )
+    claim = Claim(
+        text="Some claim",
+        citation_ids=["d1"],
+        supporting_quote="First chunk text. [d2]\nSecond chunk text.",
+    )
+    report = verify_citations(make_draft([claim]), context)
+    assert report.claim_results[0].passed is False
+    assert report.claim_results[0].failure_reason == "quote_contains_citation_marker"
 
 
 def test_zero_claims_produces_empty_report():

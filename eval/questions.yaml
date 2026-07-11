@@ -1,0 +1,39 @@
+dataset:
+  name: benchmark-v1
+  version: "1.0.0"
+
+questions:
+  - id: q001
+    question: "What granularities does this paper study for LLM-generated code detection?"
+    category: factual
+    expected:
+      answer: "The paper studies both function-level and class-level code detection."
+      citation_doc_ids: ["2185ffdbc9a2cc7c5cc2ac02e64418dda15594b83bce9e9ae64794e6a00b77f1"]
+
+  - id: q002
+    question: "How do function-level and class-level detection approaches differ in this study?"
+    category: comparative
+    expected:
+      answer: "Function-level and class-level detection rely on largely disjoint structural signatures, with limited feature overlap between the two granularities."
+      citation_doc_ids: ["2185ffdbc9a2cc7c5cc2ac02e64418dda15594b83bce9e9ae64794e6a00b77f1"]
+
+  - id: q003
+    question: "What is the main goal of this paper?"
+    category: summarization
+    expected:
+      answer: "It presents a comparative study of automatic detection of LLM-generated code across multiple contemporary models, examining both function-level and class-level granularities."
+      citation_doc_ids: ["2185ffdbc9a2cc7c5cc2ac02e64418dda15594b83bce9e9ae64794e6a00b77f1"]
+
+  - id: q004
+    question: "Define what is meant by 'function-level' detection in this paper's context."
+    category: definition
+    expected:
+      answer: "Detection performed at the granularity of an individual function, rather than an entire class."
+      citation_doc_ids: ["2185ffdbc9a2cc7c5cc2ac02e64418dda15594b83bce9e9ae64794e6a00b77f1"]
+
+  - id: q005
+    question: "What is the capital of Mars?"
+    category: factual
+    expected:
+      answer: "This question has no answer grounded in the ingested corpus; a correct system should decline to answer rather than invent one."
+      citation_doc_ids: []

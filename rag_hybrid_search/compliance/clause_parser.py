@@ -21,6 +21,69 @@ _HEADING_PATTERNS = [
 ]
 
 
+def _tag_sub_clauses(
+    block: str,
+    document_id: str,
+    document_title: str,
+    current_article: str | None,
+    current_section: str | None,
+) -> list[ClauseSpan]:
+    """Tag nested numbered/lettered sub-clauses within one top-level block.
+
+    Returns one span per sub-clause, or a single span for the whole block
+    when no sub-clause markers are found.
+    """
+    numbered = [(sc.start(), "num", sc.group(1)) for sc in _CLAUSE_RE.finditer(block)]
+    lettered = [(sc.start(), "letter", sc.group(1)) for sc in _LETTER_CLAUSE_RE.finditer(block)]
+    sub_clauses = sorted(numbered + lettered, key=lambda t: t[0])
+    if not sub_clauses:
+        return [
+            ClauseSpan(
+                text=block,
+                metadata=LegalMetadata(
+                    document_id=document_id,
+                    document_title=document_title,
+                    article=current_article,
+                    section=current_section,
+                ),
+            )
+        ]
+
+    spans: list[ClauseSpan] = []
+    sub_boundaries = [sc[0] for sc in sub_clauses] + [len(block)]
+    last_number: str | None = None
+    for j, (sc_start, kind, sc_value) in enumerate(sub_clauses):
+        sub_text = block[sc_start : sub_boundaries[j + 1]].strip()
+        if kind == "num":
+            last_number = sc_value
+            full_clause = (
+                f"{current_article}.{sc_value}" if current_article else sc_value
+            )
+        else:
+            letter = sc_value
+            if last_number is not None:
+                full_clause = (
+                    f"{current_article}.{last_number}({letter})"
+                    if current_article
+                    else f"{last_number}({letter})"
+                )
+            else:
+                full_clause = f"({letter})"
+        spans.append(
+            ClauseSpan(
+                text=sub_text,
+                metadata=LegalMetadata(
+                    document_id=document_id,
+                    document_title=document_title,
+                    article=current_article,
+                    section=current_section,
+                    clause=full_clause,
+                ),
+            )
+        )
+    return spans
+
+
 def parse_clauses(text: str, document_id: str, document_title: str) -> ClauseParseResult:
     """Split text into clause spans using regex heading detection.
 
@@ -60,54 +123,9 @@ def parse_clauses(text: str, document_id: str, document_title: str) -> ClausePar
             current_section = value
             current_article = None
 
-        numbered = [(sc.start(), "num", sc.group(1)) for sc in _CLAUSE_RE.finditer(block)]
-        lettered = [(sc.start(), "letter", sc.group(1)) for sc in _LETTER_CLAUSE_RE.finditer(block)]
-        sub_clauses = sorted(numbered + lettered, key=lambda t: t[0])
-        if not sub_clauses:
-            clauses.append(
-                ClauseSpan(
-                    text=block,
-                    metadata=LegalMetadata(
-                        document_id=document_id,
-                        document_title=document_title,
-                        article=current_article,
-                        section=current_section,
-                    ),
-                )
-            )
-            continue
-
-        sub_boundaries = [sc[0] for sc in sub_clauses] + [len(block)]
-        last_number: str | None = None
-        for j, (sc_start, kind, sc_value) in enumerate(sub_clauses):
-            sub_text = block[sc_start : sub_boundaries[j + 1]].strip()
-            if kind == "num":
-                last_number = sc_value
-                full_clause = (
-                    f"{current_article}.{sc_value}" if current_article else sc_value
-                )
-            else:
-                letter = sc_value
-                if last_number is not None:
-                    full_clause = (
-                        f"{current_article}.{last_number}({letter})"
-                        if current_article
-                        else f"{last_number}({letter})"
-                    )
-                else:
-                    full_clause = f"({letter})"
-            clauses.append(
-                ClauseSpan(
-                    text=sub_text,
-                    metadata=LegalMetadata(
-                        document_id=document_id,
-                        document_title=document_title,
-                        article=current_article,
-                        section=current_section,
-                        clause=full_clause,
-                    ),
-                )
-            )
+        clauses.extend(
+            _tag_sub_clauses(block, document_id, document_title, current_article, current_section)
+        )
 
     coverage = sum(len(c.text) for c in clauses) / max(len(text), 1)
     confidence = min(1.0, 0.5 + 0.5 * min(coverage, 1.0)) if clauses else 0.0

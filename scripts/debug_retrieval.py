@@ -134,7 +134,7 @@ def run_local(doc_path: str, query: str) -> None:
             rerank_provider=PassthroughReranker(),
             dense_weight=settings.rrf_dense_weight, sparse_weight=settings.rrf_sparse_weight,
             rrf_k=settings.rrf_k, dense_k=settings.dense_k, sparse_k=settings.sparse_k,
-            rerank_top_n=settings.rerank_top_n,
+            rerank_top_n=settings.rerank_top_n, rerank_fused_top_n=settings.rerank_fused_top_n,
         )
         reranked, _trace = retriever.retrieve(query)
         _print_retrieved("RRF FUSION TOP-K (post-rerank)", reranked, "rrf_score")

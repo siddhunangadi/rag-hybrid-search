@@ -65,7 +65,7 @@ def build_benchmark_corpus(tmp_path) -> BenchmarkCorpus:
         sparse_retriever=SparseRetriever(chunk_store, bm25_index),
         rerank_provider=CrossEncoderReranker(),
         dense_weight=0.7, sparse_weight=0.3, rrf_k=60,
-        dense_k=5, sparse_k=5, rerank_top_n=3,
+        dense_k=5, sparse_k=5, rerank_top_n=3, rerank_fused_top_n=10,
     )
     return BenchmarkCorpus(retriever, doc_id_by_filename)
 

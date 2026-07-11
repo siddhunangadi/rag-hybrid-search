@@ -28,21 +28,23 @@
           <span id="health-dot" class="status-dot status-dot--pending" aria-hidden="true"></span>
           <span id="health-text">Checking…</span>
         </div>
-        <div class="status-row">
-          <span class="badge">generation: <span id="provider-generation">…</span></span>
-        </div>
-        <div class="status-row">
-          <span class="badge">embedding: <span id="provider-embedding">…</span></span>
-        </div>
-        <div class="status-row">
-          <span class="badge" id="api-version">v…</span>
-        </div>
-        <div class="status-row">
-          <span class="badge" id="data-dir">…</span>
-        </div>
       </section>
 
-      <section class="sidebar-section" aria-labelledby="upload-heading">
+      <section class="sidebar-section" aria-labelledby="docs-heading">
+        <h2 id="docs-heading">Indexed documents</h2>
+        <ul id="doc-list" class="doc-list">
+          <li class="doc-list-empty">Loading…</li>
+        </ul>
+      </section>
+    </aside>
+
+    <main class="main">
+      <h1 style="margin-top: 0">Ask a grounded question</h1>
+      <p style="color: var(--color-foreground-muted); margin-top: -8px">
+        Ask questions about your uploaded documents — every answer is checked against the source text.
+      </p>
+
+      <section class="upload-card" aria-labelledby="upload-heading">
         <h2 id="upload-heading">Upload document</h2>
         <form id="index-form">
           <div class="field">
@@ -57,23 +59,6 @@
             <label for="index-file">Or upload a file (.pdf, .csv, .xlsx, .docx, .md, .html, .txt)</label>
             <input type="file" id="index-file" name="file" accept=".pdf,.csv,.xlsx,.docx,.md,.markdown,.html,.htm,.txt" multiple />
           </div>
-          <div class="field" style="margin-top: var(--space-3)">
-            <label for="index-document-type">Document type</label>
-            <select id="index-document-type">
-              <option value="general" selected>General</option>
-              <option value="regulation">Regulation (clause-aware chunking)</option>
-              <option value="policy">Policy</option>
-              <option value="contract">Contract</option>
-              <option value="standard">Standard</option>
-              <option value="guideline">Guideline</option>
-            </select>
-          </div>
-          <div class="question-options" style="margin-top: var(--space-3)">
-            <label>
-              <input type="checkbox" id="index-async-input" />
-              Process in background
-            </label>
-          </div>
           <button type="submit" id="index-button" class="btn btn--secondary btn--block" style="margin-top: var(--space-3)">
             Index document
           </button>
@@ -81,21 +66,7 @@
         </form>
       </section>
 
-      <section class="sidebar-section" aria-labelledby="docs-heading">
-        <h2 id="docs-heading">Indexed documents</h2>
-        <ul id="doc-list" class="doc-list">
-          <li class="doc-list-empty">Loading…</li>
-        </ul>
-      </section>
-    </aside>
-
-    <main class="main">
-      <h1 style="margin-top: 0">Ask a grounded question</h1>
-      <p style="color: var(--color-foreground-muted); margin-top: -8px">
-        Hybrid retrieval + citation-verified, confidence-scored generation.
-      </p>
-
-      <form id="ask-form" class="question-card">
+      <form id="ask-form" class="question-card" style="margin-top: var(--space-6)">
         <div class="question-row">
           <input
             type="text"
@@ -106,16 +77,6 @@
           />
           <button type="submit" id="ask-button" class="btn btn--primary">Ask</button>
         </div>
-        <div class="question-options">
-          <label>
-            <input type="checkbox" id="verify-input" checked />
-            Verify citations
-          </label>
-          <label>
-            <input type="checkbox" id="stream-input" checked />
-            Stream answer
-          </label>
-        </div>
       </form>
 
       <section id="answer-card" class="answer-card" hidden aria-live="polite">
@@ -124,27 +85,10 @@
 
         <div id="citation-list" class="citation-list"></div>
 
-        <div class="metric-row">
-          <div class="metric">
-            <span class="metric-label">Overall</span>
-            <span id="metric-overall" class="metric-value">–</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">Retrieval</span>
-            <span id="metric-retrieval" class="metric-value">–</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">Citations</span>
-            <span id="metric-citations" class="metric-value">–</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">Coverage</span>
-            <span id="metric-coverage" class="metric-value">–</span>
-          </div>
-        </div>
+        <p id="confidence-label" class="confidence-label"></p>
 
         <details class="dev-panel">
-          <summary>Developer panel — raw response</summary>
+          <summary>Show details</summary>
           <pre id="dev-panel-json"></pre>
         </details>
       </section>

@@ -65,6 +65,10 @@ class RetrievalTrace(BaseModel):
     bm25_latency_ms: float = 0.0
     fusion_latency_ms: float = 0.0
     rerank_latency_ms: float = 0.0
+    fusion_candidates: int = 0
+    budget_applied: int = 0
+    sent_to_reranker: int = 0
+    returned: int = 0
 
     @property
     def total_latency_ms(self) -> float:

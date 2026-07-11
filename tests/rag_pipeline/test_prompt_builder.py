@@ -108,6 +108,29 @@ def test_prompt_snapshot_v1():
     assert prompt == _EXPECTED_V1_PROMPT
 
 
+def test_prompt_v2_schema_omits_supporting_quote():
+    """v2 stops asking the model for supporting_quote -- the backend
+    extracts it mechanically from the cited chunk instead (quote_extractor)."""
+    context = PromptContext(text="[d1]\nsome fact", doc_id_map={"d1": "c1"})
+    prompt = build_prompt("What is the fact?", context, prompt_version="v2")
+    assert '"supporting_quote"' not in prompt
+    assert '{"text": "...", "citation_ids": ["d1"]}' in prompt
+
+
+def test_prompt_v2_instructs_one_citation_per_claim():
+    context = PromptContext(text="[d1]\nsome fact", doc_id_map={"d1": "c1"})
+    prompt = build_prompt("What is the fact?", context, prompt_version="v2")
+    assert "exactly ONE citation id" in prompt
+    assert "Never combine or concatenate wording from two different" in prompt
+
+
+def test_prompt_v2_instructs_one_claim_per_assertion():
+    context = PromptContext(text="[d1]\nsome fact", doc_id_map={"d1": "c1"})
+    prompt = build_prompt("What is the fact?", context, prompt_version="v2")
+    assert "MUST produce exactly one claim object" in prompt
+    assert "even when they cite the same source" in prompt
+
+
 def test_unknown_prompt_version_raises():
     context = PromptContext(text="", doc_id_map={})
     try:

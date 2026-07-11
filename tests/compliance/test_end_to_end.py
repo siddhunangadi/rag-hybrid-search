@@ -64,7 +64,7 @@ def _build_pipeline_components(
         sparse_retriever=SparseRetriever(chunk_store, bm25_index),
         rerank_provider=PassthroughReranker(),
         dense_weight=0.7, sparse_weight=0.3, rrf_k=60,
-        dense_k=10, sparse_k=10, rerank_top_n=5,
+        dense_k=10, sparse_k=10, rerank_top_n=5, rerank_fused_top_n=20,
     )
     return chunk_store, retriever
 

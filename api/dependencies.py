@@ -108,6 +108,16 @@ class Container:
         )
 
 
+def _nvidia_kwargs(settings: Settings) -> dict:
+    """Build NvidiaProvider kwargs from settings, only overriding
+    generation_model when explicitly set -- unset means NvidiaProvider's own
+    default (currently the 70B model) is used, unchanged behavior."""
+    kwargs: dict = {"api_key": settings.nvidia_api_key}
+    if settings.generation_model:
+        kwargs["generation_model"] = settings.generation_model
+    return kwargs
+
+
 def _select_generation_provider(
     settings: Settings, nvidia_provider: NvidiaProvider | None
 ) -> tuple[GenerationProvider, str]:
@@ -115,14 +125,14 @@ def _select_generation_provider(
     if settings.gemini_api_key:
         return GeminiProvider(api_key=settings.gemini_api_key), "gemini"
     if settings.nvidia_api_key:
-        return nvidia_provider or NvidiaProvider(api_key=settings.nvidia_api_key), "nvidia"
+        return nvidia_provider or NvidiaProvider(**_nvidia_kwargs(settings)), "nvidia"
     return MockProvider(), "mock"
 
 
 def _select_embedding_provider(settings: Settings) -> tuple[EmbeddingProvider, str, NvidiaProvider | None]:
     """Pick an embedding provider per the fallback order documented above."""
     if settings.nvidia_api_key:
-        provider = NvidiaProvider(api_key=settings.nvidia_api_key)
+        provider = NvidiaProvider(**_nvidia_kwargs(settings))
         return provider, "nvidia", provider
     return FakeEmbeddingProvider(), "fake", None
 
@@ -186,8 +196,12 @@ def build_container(settings: Settings | None = None) -> Container:
         dense_k=settings.dense_k,
         sparse_k=settings.sparse_k,
         rerank_top_n=settings.rerank_top_n,
+        rerank_fused_top_n=settings.rerank_fused_top_n,
     )
-    rag_pipeline = RagPipeline(retriever, generation_provider, chunk_store=chunk_store)
+    rag_pipeline = RagPipeline(
+        retriever, generation_provider, chunk_store=chunk_store,
+        context_prune_margin=settings.context_prune_margin,
+    )
 
     return Container(
         settings=settings,

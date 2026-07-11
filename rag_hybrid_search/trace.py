@@ -88,6 +88,13 @@ class RequestTrace:
             print(f"\nQuestion           : {question}")
             _kv(Characters=len(question), Words=len(question.split()))
 
+    @property
+    def data(self) -> dict:
+        """Read-only view of the trace's collected data. Populated
+        incrementally by each ``log_*`` call and finalized (timings,
+        runtime info) once ``finish()`` runs."""
+        return self._data
+
     def mark(self, name: str, elapsed_ms: float) -> None:
         self._timings[name] = elapsed_ms
 
@@ -158,13 +165,18 @@ class RequestTrace:
             formula = " + ".join(terms) + f" = {row['rrf_score']:.5f}"
             print(f"  chunk={row['chunk_id'][:12]}  dense_rank={row['dense_rank']}  bm25_rank={row['bm25_rank']}  {formula}")
 
-    def log_rerank(self, provider_name: str, fused: list, reranked: list, latency_ms: float) -> None:
+    def log_rerank(self, provider_name: str, fused: list, reranked: list, latency_ms: float, budget_applied: int) -> None:
         selected_ids = {r.chunk.chunk_id for r in reranked}
         dropped = [c.chunk.chunk_id for c in fused if c.chunk.chunk_id not in selected_ids]
+        fusion_candidates = len(self._data.get("fusion", []))
         self._data["rerank"] = {
             "provider": provider_name,
             "selected": [{"chunk_id": r.chunk.chunk_id, "score": r.rerank_score, "final_rank": r.final_rank} for r in reranked],
             "dropped": dropped,
+            "budget_applied": budget_applied,
+            "fusion_candidates": fusion_candidates,
+            "sent_to_reranker": len(fused),
+            "returned": len(reranked),
         }
         self.mark("rerank", latency_ms)
         if not self.enabled:
@@ -176,6 +188,58 @@ class RequestTrace:
             print(f"  SELECTED  chunk={r.chunk.chunk_id[:12]}  rank={r.final_rank}  score={score}")
         for cid in dropped:
             print(f"  DROPPED   chunk={cid[:12]}  reason=not in reranker top-{len(reranked)}")
+
+        dense_count = len(self._data.get("dense", []))
+        bm25_count = len(self._data.get("bm25", []))
+        saved = fusion_candidates - len(fused)
+        _section("RETRIEVAL BUDGET")
+        _kv(**{
+            "Dense candidates": dense_count,
+            "BM25 candidates": bm25_count,
+            "Unique fused candidates": fusion_candidates,
+            "Configured budget": budget_applied,
+            "Sent to reranker": len(fused),
+            "Returned": len(reranked),
+            "Saved": f"{saved} reranker evaluations",
+        })
+
+    def log_query_decomposition(
+        self, is_comparative: bool, subqueries: list[str],
+        raw_llm_output: str | None, concepts_retrieved: int,
+    ) -> None:
+        coverage = concepts_retrieved / len(subqueries) if subqueries else 0.0
+        self._data["query_decomposition"] = {
+            "comparative": is_comparative, "subqueries": subqueries,
+            "raw_llm_output": raw_llm_output,
+            "concepts_requested": len(subqueries), "concepts_retrieved": concepts_retrieved,
+            "coverage": coverage,
+        }
+        if not self.enabled:
+            return
+        _section("STEP 1b -- QUERY DECOMPOSITION")
+        _kv(Comparative=is_comparative, **{
+            "Concepts requested": len(subqueries),
+            "Concepts retrieved": concepts_retrieved,
+            "Coverage": f"{coverage * 100:.0f}%",
+        })
+        for i, q in enumerate(subqueries, 1):
+            print(f"  {i}. {q!r}")
+        if raw_llm_output is not None:
+            print(f"\n  Raw decomposition output: {raw_llm_output!r}")
+
+    def log_pruning(self, before: list, after: list) -> None:
+        kept_ids = {r.chunk.chunk_id for r in after}
+        dropped = [r.chunk.chunk_id for r in before if r.chunk.chunk_id not in kept_ids]
+        self._data["pruning"] = {
+            "before": len(before), "after": len(after), "dropped": dropped,
+        }
+        if not self.enabled or len(dropped) == 0:
+            return
+        _section("STEP 5b -- DYNAMIC CONTEXT PRUNING")
+        _kv(**{"Before": len(before), "After": len(after), "Dropped": len(dropped)})
+        for r in before:
+            kept = r.chunk.chunk_id in kept_ids
+            print(f"  {'KEPT   ' if kept else 'PRUNED '} chunk={r.chunk.chunk_id[:12]}  rerank_score={r.rerank_score}")
 
     def log_prompt(self, prompt: str) -> None:
         approx_tokens = len(prompt) // 4
@@ -211,12 +275,16 @@ class RequestTrace:
     def log_verification(self, verification) -> None:
         rows = [
             {"text": cr.claim.text, "citation_ids": cr.claim.citation_ids, "doc_ids_valid": cr.doc_ids_valid,
-             "quote_match_score": cr.quote_match_score, "passed": cr.passed}
+             "quote_match_score": cr.quote_match_score, "passed": cr.passed, "failure_reason": cr.failure_reason}
             for cr in verification.claim_results
         ]
+        ratio = (
+            verification.verified_claims / verification.total_claims
+            if verification.total_claims else 0.0
+        )
         self._data["verification"] = {
             "total": verification.total_claims, "verified": verification.verified_claims,
-            "failed": verification.failed_claims, "claims": rows,
+            "failed": verification.failed_claims, "verification_ratio": ratio, "claims": rows,
         }
         if not self.enabled:
             return
@@ -224,8 +292,33 @@ class RequestTrace:
         _kv(**{"Total Claims": verification.total_claims, "Verified": verification.verified_claims, "Failed": verification.failed_claims})
         for i, row in enumerate(rows, 1):
             status = "PASS" if row["passed"] else "FAIL"
-            print(f"\n  Claim {i} [{status}]  citations={row['citation_ids']}  quote_match={row['quote_match_score']:.3f}")
+            reason = f"  reason={row['failure_reason']}" if row["failure_reason"] else ""
+            print(f"\n  Claim {i} [{status}]  citations={row['citation_ids']}  quote_match={row['quote_match_score']:.3f}{reason}")
             print(f"    {row['text'][:160]!r}")
+        _section("VERIFICATION SUMMARY")
+        _kv(**{
+            "Claims generated": verification.total_claims,
+            "Claims verified": verification.verified_claims,
+            "Claims failed": verification.failed_claims,
+            "Verification Ratio": f"{ratio * 100:.0f}%",
+        })
+
+    def log_claim_diagnostics(self, rows: list[dict]) -> None:
+        self._data["claim_diagnostics"] = rows
+        if not self.enabled:
+            return
+        _section("CLAIM DIAGNOSTICS")
+        for row in rows:
+            print(f"\nCLAIM {row['claim_index']}")
+            _kv(**{
+                "citation id": row["citation_id"],
+                "chunk id": (row["chunk_id"] or "")[:12] if row["chunk_id"] else None,
+                "quote length": row["quote_length"],
+                "quote found": row["quote_found"],
+                "quote start offset": row["quote_start_offset"],
+                "quote end offset": row["quote_end_offset"],
+                "crossed boundary": "YES" if row["crossed_boundary"] else "NO",
+            })
 
     def log_confidence(self, confidence) -> None:
         self._data["confidence"] = {
@@ -239,6 +332,17 @@ class RequestTrace:
             Retrieval=f"{confidence.retrieval:.2f}", Citations=f"{confidence.citations:.2f}",
             Coverage=f"{confidence.coverage:.2f}", Overall=f"{confidence.overall:.2f}",
         )
+
+    def log_citation_check(self, inline_ids: list[str], structured_ids: list[str], status: str) -> None:
+        self._data["citation_check"] = {
+            "inline": inline_ids, "structured": structured_ids, "status": status,
+        }
+        if not self.enabled:
+            return
+        _section("CITATION STATUS")
+        _kv(Status=status, Inline=inline_ids or "[]", Structured=structured_ids or "[]")
+        if status != "ok":
+            print("Action            : no mutation performed")
 
     def log_summary(self, answer: str | None, chunks_used: int, documents_used: int) -> None:
         self._data["summary"] = {

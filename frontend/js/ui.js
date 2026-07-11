@@ -7,10 +7,15 @@ const Ui = (() => {
     return document.getElementById(id);
   }
 
-  function confidenceLabel(score) {
-    if (score >= 0.66) return "High";
-    if (score >= 0.33) return "Medium";
-    return "Low";
+  function plainConfidenceMessage(confidence) {
+    const overall = confidence.overall;
+    if (overall >= 0.75) {
+      return { text: "High confidence — this answer is well-supported by the source document.", kind: "high" };
+    }
+    if (overall >= 0.4) {
+      return { text: "Partially verified — parts of this answer could not be fully confirmed.", kind: "medium" };
+    }
+    return { text: "Low confidence — please review this answer against the source document.", kind: "low" };
   }
 
   function setStatus(dotId, textId, state, text) {
@@ -18,12 +23,6 @@ const Ui = (() => {
     dot.classList.remove("status-dot--ok", "status-dot--error", "status-dot--pending");
     dot.classList.add(`status-dot--${state}`);
     el(textId).textContent = text;
-  }
-
-  function renderProviders(health) {
-    el("provider-generation").textContent = health.generation_provider;
-    el("provider-embedding").textContent = health.embedding_provider;
-    el("data-dir").textContent = health.data_dir;
   }
 
   function renderDocuments(documentsResponse) {
@@ -59,10 +58,6 @@ const Ui = (() => {
       item.appendChild(removeBtn);
       list.appendChild(item);
     }
-  }
-
-  function renderVersion(version) {
-    el("api-version").textContent = `v${version.version}`;
   }
 
   function addDocToList(filename, status) {
@@ -132,12 +127,16 @@ const Ui = (() => {
       const structured = result.structured_citations || [];
       if (structured.length > 0) {
         citationsEl.hidden = false;
+        const seenCount = new Map();
         for (const citation of structured) {
           const chip = document.createElement("span");
           chip.className = "citation-chip";
-          chip.textContent = citation.page
+          const baseLabel = citation.page
             ? `${citation.document_title} · p.${citation.page}`
             : citation.document_title;
+          const count = (seenCount.get(baseLabel) || 0) + 1;
+          seenCount.set(baseLabel, count);
+          chip.textContent = count === 1 ? baseLabel : `${baseLabel} · excerpt ${count}`;
           chip.title = citation.display;
           citationsEl.appendChild(chip);
         }
@@ -155,11 +154,15 @@ const Ui = (() => {
       }
     }
 
-    const c = result.confidence;
-    el("metric-overall").textContent = c.overall.toFixed(2);
-    el("metric-retrieval").textContent = `${c.retrieval.toFixed(2)} (${confidenceLabel(c.retrieval)})`;
-    el("metric-citations").textContent = c.citations.toFixed(2);
-    el("metric-coverage").textContent = c.coverage.toFixed(2);
+    const label = el("confidence-label");
+    if (result.error) {
+      label.hidden = true;
+    } else {
+      const { text, kind } = plainConfidenceMessage(result.confidence);
+      label.hidden = false;
+      label.textContent = text;
+      label.className = `confidence-label confidence-label--${kind}`;
+    }
 
     el("dev-panel-json").textContent = JSON.stringify(result, null, 2);
   }
@@ -177,9 +180,7 @@ const Ui = (() => {
     const textEl = el("answer-text");
     textEl.hidden = false;
     textEl.textContent = "";
-    for (const id of ["metric-overall", "metric-retrieval", "metric-citations", "metric-coverage"]) {
-      el(id).textContent = "–";
-    }
+    el("confidence-label").hidden = true;
     el("dev-panel-json").textContent = "";
   }
 
@@ -196,9 +197,7 @@ const Ui = (() => {
 
   return {
     setStatus,
-    renderProviders,
     renderDocuments,
-    renderVersion,
     addDocToList,
     toast,
     setAskLoading,

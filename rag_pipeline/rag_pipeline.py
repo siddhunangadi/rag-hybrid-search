@@ -15,9 +15,10 @@ from rag_hybrid_search.trace import RequestTrace
 from rag_pipeline.citation_utils import chunk_text_for_doc_id
 from rag_pipeline.confidence_scorer import score_confidence
 from rag_pipeline.context_pruning import prune_by_score_margin
-from rag_pipeline.context_builder import build_context
+from rag_pipeline.context_builder import ContextLayout, build_context
 from rag_pipeline.generation_provider import GenerationProvider
 from rag_pipeline.citation_verifier import verify_citations
+from rag_hybrid_search.models import ChunkProvenance, ContextChunk
 from rag_pipeline.models import (
     Claim,
     CitationStatus,
@@ -129,7 +130,7 @@ def _inline_citation_drift(answer: str, structured_ids: set[str]) -> tuple[list[
 _FREQUENCY_BONUS_SCALE = 0.15
 
 
-def _merge_multi_query_results(results_per_query: list[list]) -> list:
+def _merge_multi_query_results(results_per_query: list[list]) -> tuple[list, dict]:
     """Merge reranked result lists from multiple sub-query retrievals into
     one ranked list, deduping by chunk_id.
 
@@ -149,13 +150,28 @@ def _merge_multi_query_results(results_per_query: list[list]) -> list:
     combined_score is sort-only, not stored on the model. Chunks with
     rerank_score=None (e.g. PassthroughReranker) sort last but are never
     dropped.
+
+    Also returns a provenance side-map ({chunk_id: ChunkProvenance}) built
+    from the same loop: primary_subquery is the index of the first
+    results_per_query[i] list the chunk appeared in (decomposition-priority
+    order), all_subqueries lists every index it appeared under. Kept as a
+    side-map rather than attached to RetrievedChunk directly so
+    prune_by_score_margin's existing behavior and tests are untouched --
+    provenance is only attached (see ContextChunk) after pruning decides
+    which chunks survive.
     """
+    from rag_hybrid_search.models import ChunkProvenance
+
     best_by_id: dict[str, object] = {}
     appearances: dict[str, int] = {}
-    for results in results_per_query:
+    subqueries_by_id: dict[str, list[int]] = {}
+    for i, results in enumerate(results_per_query):
         for r in results:
             chunk_id = r.chunk.chunk_id
             appearances[chunk_id] = appearances.get(chunk_id, 0) + 1
+            subqueries_by_id.setdefault(chunk_id, [])
+            if i not in subqueries_by_id[chunk_id]:
+                subqueries_by_id[chunk_id].append(i)
             existing = best_by_id.get(chunk_id)
             if existing is None:
                 best_by_id[chunk_id] = r
@@ -174,7 +190,11 @@ def _merge_multi_query_results(results_per_query: list[list]) -> list:
         best_by_id.values(),
         key=lambda r: (r.rerank_score is None, -combined_score(r)),
     )
-    return [r.model_copy(update={"final_rank": i}) for i, r in enumerate(merged, start=1)]
+    provenance = {
+        chunk_id: ChunkProvenance(primary_subquery=indices[0], all_subqueries=sorted(indices))
+        for chunk_id, indices in subqueries_by_id.items()
+    }
+    return [r.model_copy(update={"final_rank": i}) for i, r in enumerate(merged, start=1)], provenance
 
 
 _MAX_CONCURRENT_RETRIEVAL_WORKERS = 4
@@ -251,12 +271,14 @@ class RagPipeline:
     def __init__(
         self, retriever, generation_provider: GenerationProvider, chunk_store=None,
         prompt_version: str = "v2", context_prune_margin: float = 0.3,
+        context_layout: ContextLayout = ContextLayout.FLAT,
     ):
         self._retriever = retriever
         self._generation_provider = generation_provider
         self._chunk_store = chunk_store
         self._prompt_version = prompt_version
         self._context_prune_margin = context_prune_margin
+        self._context_layout = context_layout
 
     @property
     def retriever(self):
@@ -269,6 +291,10 @@ class RagPipeline:
     @property
     def prompt_version(self) -> str:
         return self._prompt_version
+
+    @property
+    def context_layout(self) -> ContextLayout:
+        return self._context_layout
 
     def answer(
         self, question: str, max_chunks: int = 5, verify: bool = True,
@@ -364,15 +390,32 @@ class RagPipeline:
         dev_trace.log_query_decomposition(
             comparative, subqueries, decompose_capture.get("raw"), concepts_retrieved,
         )
-        retrieved_chunks = _merge_multi_query_results(results_per_query)
+        retrieved_chunks, provenance_map = _merge_multi_query_results(results_per_query)
         retrieved_chunks = sorted(retrieved_chunks, key=lambda r: r.final_rank)[:max_chunks]
+        required_chunks = max(3 if comparative else 1, len(subqueries))
         pruned_chunks = prune_by_score_margin(
-            retrieved_chunks, self._context_prune_margin, min_keep=3 if comparative else 1,
+            retrieved_chunks, self._context_prune_margin, min_keep=required_chunks,
         )
         dev_trace.log_pruning(retrieved_chunks, pruned_chunks)
         retrieved_chunks = pruned_chunks
 
-        context = build_context(retrieved_chunks)
+        context_chunks = [
+            ContextChunk(
+                chunk=r,
+                provenance=provenance_map.get(
+                    r.chunk.chunk_id, ChunkProvenance(primary_subquery=0, all_subqueries=[0])
+                ),
+            )
+            for r in retrieved_chunks
+        ]
+        dev_trace.log_provenance(context_chunks)
+
+        layout = (
+            ContextLayout.GROUPED
+            if comparative and self._context_layout == ContextLayout.GROUPED
+            else ContextLayout.FLAT
+        )
+        context = build_context(context_chunks, subqueries, layout=layout)
         prompt = build_prompt(question, context, prompt_version=self._prompt_version)
         dev_trace.log_prompt(prompt)
         return retrieved_chunks, context, prompt

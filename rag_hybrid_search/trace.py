@@ -241,6 +241,28 @@ class RequestTrace:
             kept = r.chunk.chunk_id in kept_ids
             print(f"  {'KEPT   ' if kept else 'PRUNED '} chunk={r.chunk.chunk_id[:12]}  rerank_score={r.rerank_score}")
 
+    def log_provenance(self, context_chunks: list) -> None:
+        self._data["provenance"] = {
+            cc.chunk.chunk.chunk_id: {
+                "primary_subquery": cc.provenance.primary_subquery,
+                "all_subqueries": cc.provenance.all_subqueries,
+            }
+            for cc in context_chunks
+        }
+        multi_subquery = [
+            cc for cc in context_chunks if len(cc.provenance.all_subqueries) > 1
+        ]
+        if not self.enabled or not multi_subquery:
+            return
+        _section("STEP 5c -- CHUNK PROVENANCE")
+        for cc in multi_subquery:
+            others = [i for i in cc.provenance.all_subqueries if i != cc.provenance.primary_subquery]
+            print(
+                f"  chunk={cc.chunk.chunk.chunk_id[:12]}  "
+                f"primary=subquery {cc.provenance.primary_subquery + 1}  "
+                f"also matched=subqueries {[i + 1 for i in others]}"
+            )
+
     def log_prompt(self, prompt: str) -> None:
         approx_tokens = len(prompt) // 4
         self._data["prompt"] = {"text": prompt, "chars": len(prompt), "approx_tokens": approx_tokens}

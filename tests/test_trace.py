@@ -1,6 +1,6 @@
 import pytest
 
-from rag_hybrid_search.models import Chunk, RetrievedChunk
+from rag_hybrid_search.models import Chunk, ChunkProvenance, ContextChunk, RetrievedChunk
 from rag_hybrid_search.trace import RequestTrace
 
 
@@ -125,3 +125,25 @@ def test_log_query_decomposition_coverage_zero_when_no_subqueries():
     trace.log_query_decomposition(False, [], raw_llm_output=None, concepts_retrieved=0)
 
     assert trace._data["query_decomposition"]["coverage"] == 0.0
+
+
+def test_log_provenance_records_primary_and_all_subqueries():
+    trace = RequestTrace("question", {})
+    chunk = Chunk(
+        chunk_id="c1", document_id="d1", chunk_index=0, text="hello",
+        strategy_version="fixed-v1", heading=None, page=None, char_count=5,
+    )
+    retrieved = RetrievedChunk(
+        chunk=chunk, dense_score=0.9, bm25_score=0.9, rrf_score=0.5,
+        rerank_score=0.8, final_rank=1,
+    )
+    context_chunk = ContextChunk(
+        chunk=retrieved,
+        provenance=ChunkProvenance(primary_subquery=0, all_subqueries=[0, 1]),
+    )
+
+    trace.log_provenance([context_chunk])
+
+    assert trace._data["provenance"] == {
+        "c1": {"primary_subquery": 0, "all_subqueries": [0, 1]},
+    }

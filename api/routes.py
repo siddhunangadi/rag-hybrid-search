@@ -39,9 +39,9 @@ from rag_hybrid_search.ingestion.loaders.markdown import MarkdownLoader
 from rag_hybrid_search.ingestion.loaders.pdf import PdfLoader
 from rag_hybrid_search.ingestion.loaders.text import TextLoader
 from rag_hybrid_search.ingestion.loaders.xlsx_loader import XlsxLoader
-from rag_hybrid_search.models import IndexStatus
+from rag_hybrid_search.models import ChunkProvenance, ContextChunk, IndexStatus
 from rag_hybrid_search.retrieval.fusion import weighted_rrf
-from rag_pipeline.context_builder import build_context
+from rag_pipeline.context_builder import ContextLayout, build_context
 from rag_pipeline.models import RagAnswer
 from rag_pipeline.prompt_builder import build_prompt
 
@@ -227,7 +227,14 @@ async def debug_retrieval(
     )
     reranked, _trace = retriever.retrieve(query)
 
-    context = build_context(sorted(reranked, key=lambda r: r.final_rank)[:5])
+    top_chunks = [
+        ContextChunk(
+            chunk=r,
+            provenance=ChunkProvenance(primary_subquery=0, all_subqueries=[0]),
+        )
+        for r in sorted(reranked, key=lambda r: r.final_rank)[:5]
+    ]
+    context = build_context(top_chunks, subqueries=[], layout=ContextLayout.FLAT)
     prompt = build_prompt(query, context, prompt_version=pipeline.prompt_version)
     raw_generation = pipeline.generation_provider.generate(prompt)
 

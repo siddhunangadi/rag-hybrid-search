@@ -3,6 +3,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from rag_hybrid_search.models import Chunk, RetrievalTrace, RetrievedChunk
+from rag_pipeline.context_builder import ContextLayout
 from rag_pipeline.generation_provider import MockProvider
 from rag_pipeline.models import CitationStatus
 from rag_pipeline.rag_pipeline import (
@@ -207,7 +208,7 @@ def test_merge_multi_query_results_dedupes_by_chunk_id_keeping_best_score():
         make_retrieved_chunk("c3", "text3", rerank_score=0.5, final_rank=2),
     ]
 
-    merged = _merge_multi_query_results([q1_results, q2_results])
+    merged, _ = _merge_multi_query_results([q1_results, q2_results])
 
     assert [r.chunk.chunk_id for r in merged] == ["c1", "c2", "c3"]
     assert merged[0].rerank_score == 3.0
@@ -224,7 +225,7 @@ def test_merge_multi_query_results_boosts_chunks_appearing_in_multiple_subquerie
     b = make_retrieved_chunk("b", "text-b", rerank_score=2.1, final_rank=1)
     results_per_query = [[a], [a], [a], [a, b]]
 
-    merged = _merge_multi_query_results(results_per_query)
+    merged, _ = _merge_multi_query_results(results_per_query)
 
     assert [r.chunk.chunk_id for r in merged] == ["a", "b"]
 
@@ -236,7 +237,7 @@ def test_merge_multi_query_results_single_appearance_uses_raw_score():
     a = make_retrieved_chunk("a", "text-a", rerank_score=2.0, final_rank=1)
     b = make_retrieved_chunk("b", "text-b", rerank_score=2.1, final_rank=1)
 
-    merged = _merge_multi_query_results([[a], [b]])
+    merged, _ = _merge_multi_query_results([[a], [b]])
 
     assert [r.chunk.chunk_id for r in merged] == ["b", "a"]
 
@@ -252,7 +253,7 @@ def test_merge_multi_query_results_frequency_bonus_does_not_overwhelm_a_much_hig
     b = make_retrieved_chunk("b", "text-b", rerank_score=2.2, final_rank=1)
     results_per_query = [[a]] * 7 + [[a, b]]
 
-    merged = _merge_multi_query_results(results_per_query)
+    merged, _ = _merge_multi_query_results(results_per_query)
 
     assert [r.chunk.chunk_id for r in merged] == ["b", "a"]
 
@@ -263,9 +264,35 @@ def test_merge_multi_query_results_handles_missing_rerank_score():
     q1_results = [make_retrieved_chunk("c1", "text1", rerank_score=None, final_rank=1)]
     q2_results = [make_retrieved_chunk("c2", "text2", rerank_score=None, final_rank=1)]
 
-    merged = _merge_multi_query_results([q1_results, q2_results])
+    merged, _ = _merge_multi_query_results([q1_results, q2_results])
 
     assert {r.chunk.chunk_id for r in merged} == {"c1", "c2"}
+
+
+def test_merge_returns_provenance_side_map():
+    chunk_a = make_retrieved_chunk("a", "text a", final_rank=1)
+    chunk_b = make_retrieved_chunk("b", "text b", final_rank=1)
+    chunk_c = make_retrieved_chunk("c", "text c", final_rank=1)
+
+    # subquery 0 retrieves a, b; subquery 1 retrieves b, c
+    results_per_query = [[chunk_a, chunk_b], [chunk_b, chunk_c]]
+
+    merged, provenance = _merge_multi_query_results(results_per_query)
+
+    assert provenance["a"].primary_subquery == 0
+    assert provenance["a"].all_subqueries == [0]
+    assert provenance["b"].primary_subquery == 0  # first seen under subquery 0
+    assert provenance["b"].all_subqueries == [0, 1]
+    assert provenance["c"].primary_subquery == 1
+    assert provenance["c"].all_subqueries == [1]
+    assert {r.chunk.chunk_id for r in merged} == {"a", "b", "c"}
+
+
+def test_merge_provenance_single_subquery():
+    chunk_a = make_retrieved_chunk("a", "text a", final_rank=1)
+    merged, provenance = _merge_multi_query_results([[chunk_a]])
+    assert provenance["a"].primary_subquery == 0
+    assert provenance["a"].all_subqueries == [0]
 
 
 class MultiQueryFakeRetriever:
@@ -467,3 +494,101 @@ def test_answer_accepts_injected_dev_trace_and_exposes_its_data():
     assert trace.data["question"] == "What is X?"
     assert "timings_ms" in trace.data
     assert trace.data["summary"]["chunks_used"] == 1
+
+
+def test_context_layout_defaults_to_flat_and_is_exposed():
+    chunks = [make_retrieved_chunk("c1", "Some evidence text.")]
+    pipeline = RagPipeline(FakeRetriever(chunks), MockProvider())
+    assert pipeline.context_layout == ContextLayout.FLAT
+
+
+def test_factual_question_stays_flat_even_with_grouped_configured():
+    from rag_hybrid_search.trace import RequestTrace
+
+    chunk = make_retrieved_chunk("c1", "Employees get 20 days of paid leave.")
+    retriever = MultiQueryFakeRetriever({"How many days of paid leave?": [chunk]})
+    canned = json.dumps({
+        "answer": "Employees get 20 days of paid leave [d1].",
+        "claims": [{"text": "Employees get 20 days of paid leave.", "citation_ids": ["d1"]}],
+    })
+    pipeline = RagPipeline(
+        retriever, MockProvider(canned_json=canned), context_layout=ContextLayout.GROUPED,
+    )
+
+    trace = RequestTrace("How many days of paid leave?", {"Generation": "MockProvider"})
+    result = pipeline.answer("How many days of paid leave?", dev_trace=trace)
+
+    assert result.error is None
+    assert "Evidence for subquery" not in trace.data["prompt"]["text"]
+
+
+def test_comparative_question_groups_when_configured_grouped():
+    from rag_hybrid_search.trace import RequestTrace
+
+    chunks_by_query = {
+        "RQ1 findings": [make_retrieved_chunk("rq1", "RQ1: granularity matters.", rerank_score=5.0)],
+        "RQ3 findings": [make_retrieved_chunk("rq3", "RQ3: features overlap.", rerank_score=0.1, final_rank=2)],
+    }
+    retriever = MultiQueryFakeRetriever(chunks_by_query)
+    decompose_canned = json.dumps(["RQ1 findings", "RQ3 findings"])
+    answer_canned = json.dumps({
+        "answer": "RQ1 shows granularity matters [d1] and RQ3 shows features overlap [d2].",
+        "claims": [
+            {"text": "Granularity matters.", "citation_ids": ["d1"]},
+            {"text": "Features overlap.", "citation_ids": ["d2"]},
+        ],
+    })
+    provider = MockProvider(canned_json=answer_canned)
+    calls = {"n": 0}
+    original_generate = provider.generate
+
+    def generate(prompt, **kwargs):
+        calls["n"] += 1
+        return decompose_canned if calls["n"] == 1 else original_generate(prompt, **kwargs)
+
+    provider.generate = generate
+
+    pipeline = RagPipeline(retriever, provider, context_layout=ContextLayout.GROUPED)
+    trace = RequestTrace("How do RQ1 and RQ3 findings differ?", {"Generation": "MockProvider"})
+    result = pipeline.answer("How do RQ1 and RQ3 findings differ?", dev_trace=trace)
+
+    assert result.error is None
+    assert "Evidence for subquery 1" in trace.data["prompt"]["text"]
+    assert "Evidence for subquery 2" in trace.data["prompt"]["text"]
+
+
+def test_comparative_question_min_keep_floors_at_subquery_count():
+    """4 subqueries, one dominant score -- min_keep must be 4, not the
+    fixed 3 the pre-existing comparative min_keep used."""
+    chunks_by_query = {
+        "RQ1 findings": [make_retrieved_chunk("rq1", "RQ1 finding.", rerank_score=5.0)],
+        "RQ2 findings": [make_retrieved_chunk("rq2", "RQ2 finding.", rerank_score=0.2, final_rank=2)],
+        "RQ3 findings": [make_retrieved_chunk("rq3", "RQ3 finding.", rerank_score=0.1, final_rank=3)],
+        "RQ4 findings": [make_retrieved_chunk("rq4", "RQ4 finding.", rerank_score=0.05, final_rank=4)],
+    }
+    retriever = MultiQueryFakeRetriever(chunks_by_query)
+    decompose_canned = json.dumps(["RQ1 findings", "RQ2 findings", "RQ3 findings", "RQ4 findings"])
+    answer_canned = json.dumps({
+        "answer": "RQ1 [d1], RQ2 [d2], RQ3 [d3], RQ4 [d4].",
+        "claims": [
+            {"text": "RQ1 finding.", "citation_ids": ["d1"]},
+            {"text": "RQ2 finding.", "citation_ids": ["d2"]},
+            {"text": "RQ3 finding.", "citation_ids": ["d3"]},
+            {"text": "RQ4 finding.", "citation_ids": ["d4"]},
+        ],
+    })
+    provider = MockProvider(canned_json=answer_canned)
+    calls = {"n": 0}
+    original_generate = provider.generate
+
+    def generate(prompt, **kwargs):
+        calls["n"] += 1
+        return decompose_canned if calls["n"] == 1 else original_generate(prompt, **kwargs)
+
+    provider.generate = generate
+
+    pipeline = RagPipeline(retriever, provider)
+    result = pipeline.answer("How do RQ1, RQ2, RQ3, and RQ4 findings differ?")
+
+    assert result.error is None
+    assert {c for c in result.citations} == {"d1", "d2", "d3", "d4"}

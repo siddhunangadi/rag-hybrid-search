@@ -53,10 +53,37 @@ Prompt (template unchanged — question/context interpolation already separate)
 `list[RetrievedChunk]` exactly as today, at zero regression risk. Provenance rides
 alongside as a `{chunk_id: ChunkProvenance}` dict built during merge, and gets attached
 to the surviving chunks only after pruning decides which chunks exist. `build_context`
-receives fully-decided `ContextChunk`s and only decides ordering/formatting/citation
-numbering — never which chunks exist. This is an explicit architectural rule for this
-feature: **`build_context` never changes retrieval decisions** (no regrouping,
-rescoring, pruning, or dedup inside it).
+receives fully-decided `ContextChunk`s.
+
+**Trade-off, made deliberately:** an alternative design wraps chunks into `ContextChunk`
+immediately after merge and makes `prune_by_score_margin` generic over any object
+exposing `rerank_score`, eliminating the side-map/attach step. Rejected here because
+`prune_by_score_margin` has 9 existing tests built directly against `RetrievedChunk`
+and a docstring specifically about `rerank_score` scale/sign invariance; making it
+generic means either rewriting all 9 tests around a wrapper type or adding a
+Protocol/accessor indirection to a single-purpose function for one call site. The
+side-map is ~8 lines of glue with zero risk to that module. Revisit if a second
+consumer of generic-pruning ever appears.
+
+## Design Invariant
+
+**`build_context` is presentation-only.**
+
+It may:
+- order chunks and groups
+- format text, headers, and section breaks
+- assign citation ids
+
+It must never:
+- prune chunks
+- deduplicate across calls (dedup happens once, upstream, at merge)
+- rerank or rescore
+- regroup evidence in a way that changes which chunks are included
+- otherwise modify any retrieval decision
+
+Every retrieval/pruning decision is final by the time `context_chunks` reaches
+`build_context`. This is the contract that keeps rendering changes (this spec, and any
+future layout) safe to make without re-auditing retrieval correctness.
 
 ## Data model
 
@@ -87,6 +114,13 @@ class ContextLayout(str, Enum):
     FLAT = "flat"
     GROUPED = "grouped"
 
+# ContextLayout is expected to grow. Plausible future values:
+#   HIERARCHICAL   — group by document, then chunk, within each subquery (Tier 2)
+#   DOCUMENT_FIRST — group by source document instead of subquery
+#   COMPRESSED     — merge adjacent chunks from the same section before rendering
+# Not implemented now; documented so new layouts extend the enum rather than
+# growing a parallel ad-hoc flag.
+
 def build_context(
     context_chunks: list[ContextChunk],
     subqueries: list[str],
@@ -110,12 +144,11 @@ subquery-decomposition order; within each group, chunks stay in their existing
 `final_rank` order. Renders:
 
 ```
-Evidence relevant to subquery 1
+Evidence for subquery 1
 
-Question:
+This evidence was retrieved to answer:
+
 "What does RQ1 conclude?"
-
-Relevant excerpts:
 
 [d1]
 ...
@@ -123,12 +156,11 @@ Relevant excerpts:
 [d2]
 ...
 
-Evidence relevant to subquery 2
+Evidence for subquery 2
 
-Question:
+This evidence was retrieved to answer:
+
 "What does RQ3 conclude?"
-
-Relevant excerpts:
 
 [d3]
 ...
@@ -210,6 +242,9 @@ Phase 2 regression infrastructure already built (no new evaluation mechanism):
 - Verification pass rate not decreased
 - Factual category unchanged (±1%)
 - Prompt token count increase ≤20% (comparative category average)
+- Average generation latency not regressed by more than 10% (comparative category) —
+  this feature changes prompt organization, not just length; a grouped prompt that
+  confuses or slows the generation model would show up here even if accuracy holds
 
 This is a manual gate run once before flipping any default — not wired into CI, since
 it requires a real corpus and generation provider (same reasoning that keeps CI
@@ -226,3 +261,7 @@ objective-only per the Phase 2 design).
 - Diversity-aware pruning, adjacent-chunk compression (Tier 2/3).
 - New multi-hop/definition/summarization budget tiers — only the existing
   comparative/non-comparative split is used, floored by `len(subqueries)`.
+- Provenance-aware retrieval visualization (displaying chunk → subquery relationships
+  in developer traces/UI, beyond the plain-text `log_provenance` trace section this
+  spec adds). The provenance model is built now specifically so this is possible later
+  without another data-model change.

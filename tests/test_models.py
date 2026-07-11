@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from rag_hybrid_search.models import (
     Chunk,
+    ChunkProvenance,
+    ContextChunk,
     Document,
     EmbeddingRecord,
     IndexStatus,
@@ -123,3 +125,20 @@ def test_retrieval_trace_budget_fields_roundtrip():
     assert trace.budget_applied == 8
     assert trace.sent_to_reranker == 8
     assert trace.returned == 5
+
+
+def test_chunk_provenance_and_context_chunk():
+    chunk = Chunk(
+        chunk_id="c1", document_id="d1", chunk_index=0, text="hello",
+        strategy_version="fixed-v1", heading=None, page=None, char_count=5,
+    )
+    retrieved = RetrievedChunk(
+        chunk=chunk, dense_score=0.9, bm25_score=0.9, rrf_score=0.5,
+        rerank_score=0.8, final_rank=1,
+    )
+    provenance = ChunkProvenance(primary_subquery=0, all_subqueries=[0, 2])
+    context_chunk = ContextChunk(chunk=retrieved, provenance=provenance)
+
+    assert context_chunk.chunk is retrieved
+    assert context_chunk.provenance.primary_subquery == 0
+    assert context_chunk.provenance.all_subqueries == [0, 2]

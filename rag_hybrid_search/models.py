@@ -53,6 +53,16 @@ class RetrievedChunk(BaseModel):
     final_rank: int
 
 
+class ChunkProvenance(BaseModel):
+    primary_subquery: int
+    all_subqueries: list[int]
+
+
+class ContextChunk(BaseModel):
+    chunk: RetrievedChunk
+    provenance: ChunkProvenance
+
+
 class IndexStatus(str, Enum):
     PENDING = "pending"
     INDEXING = "indexing"

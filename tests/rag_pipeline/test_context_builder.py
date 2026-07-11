@@ -111,3 +111,20 @@ def test_flat_layout_byte_identical_to_grouped_chunk_set_but_no_headers():
     subqueries = ["sub a", "sub b"]
     flat = build_context(chunks, subqueries, layout=ContextLayout.FLAT)
     assert flat.text == "[d1]\nfirst\n\n[d2]\nsecond"
+
+
+def test_grouped_numbering_continues_correctly_after_multi_chunk_group():
+    chunks = [
+        make_context_chunk("c1", "group0 chunk a", final_rank=1, primary_subquery=0),
+        make_context_chunk("c2", "group0 chunk b", final_rank=2, primary_subquery=0),
+        make_context_chunk("c3", "group1 chunk", final_rank=3, primary_subquery=1),
+    ]
+    subqueries = ["sub a", "sub b"]
+    context = build_context(chunks, subqueries, layout=ContextLayout.GROUPED)
+
+    assert context.doc_id_map == {"d1": "c1", "d2": "c2", "d3": "c3"}
+    # d3 (group 1's only chunk) must appear after both d1 and d2 (group 0's two chunks)
+    assert context.text.index("[d1]") < context.text.index("[d2]") < context.text.index("[d3]")
+    # d3 must render under "Evidence for subquery 2", not restart as if it were d1
+    section2_start = context.text.index("Evidence for subquery 2")
+    assert context.text.index("[d3]") > section2_start

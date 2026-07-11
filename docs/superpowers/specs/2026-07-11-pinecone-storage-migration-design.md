@@ -13,25 +13,38 @@ fixing deployment.
 ## Architecture (end state)
 
 ```
-PDF/doc → Loader → Chunker → NVIDIA embeddings
-                                    │
-                              ┌─────┴─────┐
-                              │  Pinecone │
-                              │  (dense + sparse vectors,
-                              │   chunk/document metadata)
-                              └─────┬─────┘
-                         ┌──────────┴──────────┐
-                         ▼                     ▼
-                  DenseRetriever         SparseRetriever
-                         │                     │
-                         └─────────┬───────────┘
-                                   ▼
-                            weighted_rrf (unchanged)
-                                   ▼
-                              Reranker (unchanged)
-                                   ▼
-                    [rest of the pipeline: unchanged]
+PDF/doc → Loader → Chunker
+                        │
+              ┌─────────┴─────────┐
+              ▼                   ▼
+      NVIDIA embeddings      raw chunk text
+              │                   │
+              ▼                   ▼
+     ┌──────────────────┐  ┌──────────────────────┐
+     │ Pinecone (dense)  │  │ Pinecone (sparse,     │
+     │ dense vectors +   │  │ hosted sparse model — │
+     │ chunk/doc metadata│  │ text in, sparse       │
+     │ = PineconeStore   │  │ vector computed        │
+     └─────────┬─────────┘  │ server-side)           │
+               │             └──────────┬────────────┘
+               ▼                        ▼
+        DenseRetriever           SparseRetriever
+               │                        │
+               └───────────┬────────────┘
+                            ▼
+                     weighted_rrf (unchanged)
+                            ▼
+                       Reranker (unchanged)
+                            ▼
+             [rest of the pipeline: unchanged]
 ```
+
+Two Pinecone indexes, not one: a dense index (also carrying chunk/document
+metadata, since `PineconeStore` needs it for `ChunkStore` methods) and a
+separate sparse index using Pinecone's **hosted sparse embedding model**
+(integrated inference) — Pinecone computes the sparse vector from raw chunk
+text server-side, so no client-side encoder is fit, maintained, or persisted
+by this project at all.
 
 Everything from the reranker up through generation, citation verification,
 confidence scoring, comparative decomposition, grouped context, and the evaluation
@@ -52,9 +65,12 @@ harness is **untouched** — none of it depends on storage internals.
   chunk sizes).
 - `PineconeSparseIndex` — new class matching `BM25Index`'s `search(query, k) ->
   list[tuple[chunk_id, score]]` return shape, so `SparseRetriever`'s dependency
-  swaps with no interface change. Backed by `pinecone-text`'s `BM25Encoder`,
-  fit on this project's own corpus (not a generic pretrained corpus) for term
-  weighting that matches today's locally-fit `BM25Index` quality.
+  swaps with no interface change. Backed by a Pinecone integrated-inference
+  index using a hosted sparse embedding model — upsert/query with raw chunk
+  text, Pinecone computes the sparse vector server-side. No `BM25Encoder`, no
+  client-side fitting, no refit-on-write logic, no encoder-state persistence
+  question at all — this eliminates an entire indexing subsystem this project
+  would otherwise have to build and maintain.
 
 **Unchanged (interfaces and logic both):**
 - `DenseRetriever`, `SparseRetriever`, `HybridRetriever` (name, constructor,
@@ -85,21 +101,20 @@ floating-point precision, and ANN index behavior can differ from Chroma's even
 with identical fusion logic on top — which is exactly what Phase 3's evaluation
 gate exists to catch if the difference matters.
 
-## Sparse encoder: no persistence at all
+## Sparse encoding: no self-managed encoder at all
 
-Encoder state is configuration, not retrieval data — it doesn't belong stored
-inside the search index (a sentinel vector per namespace doesn't scale cleanly
-to multiple namespaces, e.g. `legal`/`finance`/`research`, and mixes concerns).
-For this project's corpus size (~449 chunks today), refitting `BM25Encoder` is
-trivial, so there is no persistence step at all: `PineconeSparseIndex` refits
-in-process by reading the current corpus from `PineconeStore.all()` — once at
-app startup, and again after every `add_document`/`remove_document` operation
-(mirrors today's `rebuild_bm25_index()` call pattern exactly, just held in
-memory instead of pickled to disk). A Render redeploy wiping in-process memory
-is fine — startup already re-reads the corpus from Pinecone and refits.
-Not persisting is explicitly the simplification here, not a gap: if the corpus
-ever grows large enough that refit-on-startup becomes slow, that's the trigger
-to revisit (Deferred).
+Earlier drafts of this spec proposed a self-fit `pinecone-text` `BM25Encoder`
+(fit on this project's corpus, refit on every write). That was itself already
+scoped away from persisting the encoder state — but on reflection, fitting and
+maintaining a custom encoder is an indexing subsystem in its own right (fit
+logic, refit-on-write, startup refit, testing, drift-vs-local-BM25
+validation) that this migration doesn't need to build: Pinecone's hosted
+sparse embedding model (integrated inference) computes sparse vectors from raw
+text server-side. `PineconeSparseIndex.search(query, k)` sends the raw query
+string; ingestion sends raw chunk text to `upsert`. No fitting, no refitting,
+no in-process state, no persistence question — the entire encoder-lifecycle
+problem this section previously solved with "refit on startup" no longer
+exists, because there's nothing local to refit.
 
 ## Backend selection: one flag, not a hard cutover
 
@@ -145,10 +160,11 @@ completes, so the flag's two values (`local`, `pinecone`) never contradict the
 single-flag design — there's never a moment where the flag itself offers a
 mixed local/Pinecone configuration.
 
-**Phase 2 — Sparse migration.** `PineconeSparseIndex`, `BM25Encoder`
-in-process refit-on-startup/refit-on-write, `IndexManager` refit call added to
-its Pinecone path. Once this lands, `RAG_STORAGE_BACKEND=pinecone` fully
-replaces all three local stores with no partial state.
+**Phase 2 — Sparse migration.** `PineconeSparseIndex` backed by Pinecone's
+hosted sparse embedding model, `IndexManager`'s Pinecone path calls its
+`upsert`/`delete` with raw chunk text (no encoder fit/refit step needed). Once
+this lands, `RAG_STORAGE_BACKEND=pinecone` fully replaces all three local
+stores with no partial state.
 
 **Phase 3 — Validation.** Run `scripts/run_eval.py --compare-baseline` with a
 Pinecone-backed baseline vs. the existing Chroma/SQLite/BM25 baseline. Required
@@ -158,8 +174,10 @@ before any default flips or old code is removed:
 - Hallucination rate not increased
 - Latency not regressed beyond an acceptable margin (reuses Phase 2 eval
   infrastructure's existing latency gate pattern)
-- Manual spot-check that sparse relevance (corpus-fit `BM25Encoder`) is
-  comparable to today's local BM25 on a few keyword-heavy queries
+- Manual spot-check that Pinecone's hosted sparse model's relevance is
+  comparable to today's local BM25 on a few keyword-heavy queries (a hosted
+  model's term-weighting behavior isn't guaranteed identical to `rank_bm25`,
+  even though both are BM25-family — this is exactly what the spot-check is for)
 
 **Phase 4 (separate, deferred, not part of this plan) — Cleanup.** Remove
 Chroma/SQLite/local-BM25 code, flip defaults, drop the feature flags, delete
@@ -197,6 +215,11 @@ this spec exists to fix — everything else in this document is how, not why.
   decision, not a consequence of this migration.
 - Renaming `HybridRetriever` or any other class.
 - Removing `bm25_score`/`rrf_score` fields or fusion trace logging.
-- Pinecone's native alpha-weighted hybrid search (bypassing app-level RRF).
-- Scaling `BM25Encoder` refit beyond full-corpus-recompute-on-every-write.
+- Pinecone's native alpha-weighted hybrid search (bypassing app-level RRF) —
+  still rejected even with the hosted sparse model, for the same reason as
+  before: it would replace `weighted_rrf` with Pinecone's internal fusion.
+- Self-managed sparse encoding (`pinecone-text` `BM25Encoder` or similar) —
+  considered and rejected in favor of Pinecone's hosted sparse model, which
+  eliminates the fit/refit/persistence problem entirely rather than just
+  simplifying it.
 - Phase 4 cleanup itself (tracked as a future, separate plan once Phase 3 passes).

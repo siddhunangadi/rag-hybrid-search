@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync
+      - name: Run test suite
+        run: uv run python -m pytest -q
+      - name: Eval harness smoke (fixture pipeline, no network)
+        run: uv run python scripts/run_eval.py --fixture-pipeline --out-dir /tmp/eval-smoke
+      - name: Validate committed baselines
+        run: |
+          uv run python - <<'EOF'
+          from pathlib import Path
+          from rag_pipeline.eval.baseline import load_baseline
+          base_dir = Path("eval/baselines")
+          files = sorted(base_dir.glob("*.json")) if base_dir.exists() else []
+          for f in files:
+              load_baseline(f.stem, base_dir=base_dir)
+              print(f"OK {f}")
+          print(f"Validated {len(files)} baseline(s)")
+          EOF

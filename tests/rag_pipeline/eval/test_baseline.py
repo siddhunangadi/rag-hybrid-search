@@ -79,7 +79,6 @@ def test_save_baseline_cleans_up_temp_file_on_write_failure(tmp_path, monkeypatc
     import os
 
     # Monkeypatch os.fsync to raise an exception
-    original_fsync = os.fsync
     def failing_fsync(fd):
         raise OSError("Simulated disk full error")
 

@@ -234,6 +234,23 @@ Note: the developer panel shows the real raw JSON response (confidence breakdown
 
 Retrieval-quality regression check over a small fixed corpus: **Recall@3 = 1.00, MRR = 1.00** across 6 queries. See [docs/BENCHMARK.md](docs/BENCHMARK.md) for methodology, honest scope (small toy corpus, deterministic fake embeddings), and how to reproduce it (`uv run python -m scripts.benchmark`).
 
+## Regression detection
+
+```bash
+# Create/refresh the baseline (commit the result)
+python scripts/run_eval.py --update-baseline --notes "why the baseline moved"
+
+# Compare a fresh run against the baseline (exit 1 on regression)
+python scripts/run_eval.py --compare-baseline
+
+# Compare an existing report without re-running
+python scripts/check_baseline.py --report eval/reports/<ts>/report.json
+```
+
+Thresholds live in `eval/thresholds.yaml` (two tiers: warn prints, fail gates).
+Baselines are named: `--baseline-name bm25` → `eval/baselines/bm25.json`.
+Exit codes: 0 ok/warn, 1 regression, 2 baseline missing, 3 corrupt, 4 question-set changed, 5 usage.
+
 ## Running tests
 
 ```bash

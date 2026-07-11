@@ -75,11 +75,15 @@ config for these three, `chroma/`, `chunks.db`, `bm25.pkl` on disk.
 
 Pinecone's built-in hybrid search combines dense+sparse into one weighted-dot-product
 score per query, which would bypass `weighted_rrf` entirely and change fusion
-behavior. To keep `weighted_rrf`'s existing rank-position-based fusion logic
-byte-identical, `DenseRetriever` and `SparseRetriever` issue **two independent
-Pinecone queries** — one with only `vector` (dense) set, one with only
-`sparse_vector` set — each returning its own ranked `(chunk_id, score)` list,
-fused the same way as today.
+behavior. To preserve the existing application-level `weighted_rrf` fusion logic
+and retrieval flow, `DenseRetriever` and `SparseRetriever` issue **two
+independent Pinecone queries** — one with only `vector` (dense) set, one with
+only `sparse_vector` set — each returning its own ranked `(chunk_id, score)`
+list, fused the same algorithm as today. This is not a promise of
+bit-for-bit identical retrieval results: Pinecone's internal tie-breaking,
+floating-point precision, and ANN index behavior can differ from Chroma's even
+with identical fusion logic on top — which is exactly what Phase 3's evaluation
+gate exists to catch if the difference matters.
 
 ## Sparse encoder: no persistence at all
 
@@ -130,11 +134,16 @@ The Chroma/SQLite/local-BM25 path is untouched.
 ## Phases
 
 **Phase 1 — Dense + metadata migration.** `PineconeStore` (vector + chunk
-methods), `RAG_STORAGE_BACKEND` flag wiring, `IndexManager` conditional path
-for vector+chunk. Sparse retrieval keeps using local `BM25Index` even when
-`RAG_STORAGE_BACKEND=pinecone` (still ephemeral-disk-exposed for sparse only,
-isolated to Phase 2 — a temporary, explicitly-labeled exception to the
-single-flag rule above, needed only during the migration itself).
+methods), `IndexManager` conditional path for vector+chunk. This is an
+**implementation phase, not a deployable configuration**: during Phase 1,
+Pinecone vectors/metadata coexist with sparse retrieval still on local
+`BM25Index` in the codebase, but this transitional state is never exposed as a
+supported value of `RAG_STORAGE_BACKEND` — it exists only while Phase 2 is
+being built, behind a build-time branch, not a runtime flag anyone would set.
+The public `RAG_STORAGE_BACKEND=pinecone` mode is introduced only once Phase 2
+completes, so the flag's two values (`local`, `pinecone`) never contradict the
+single-flag design — there's never a moment where the flag itself offers a
+mixed local/Pinecone configuration.
 
 **Phase 2 — Sparse migration.** `PineconeSparseIndex`, `BM25Encoder`
 in-process refit-on-startup/refit-on-write, `IndexManager` refit call added to
@@ -155,6 +164,15 @@ before any default flips or old code is removed:
 **Phase 4 (separate, deferred, not part of this plan) — Cleanup.** Remove
 Chroma/SQLite/local-BM25 code, flip defaults, drop the feature flags, delete
 local persistence config — only after Phase 3 passes in production.
+
+## Success criterion
+
+**Migration complete** when: the application no longer depends on local
+persistent storage for indexing or retrieval. A full Render redeploy, followed
+by application startup with `RAG_STORAGE_BACKEND=pinecone`, requires no manual
+re-indexing before `/answer` queries succeed against the previously-indexed
+corpus. This is the direct, verifiable statement of the deployment problem
+this spec exists to fix — everything else in this document is how, not why.
 
 ## Testing
 

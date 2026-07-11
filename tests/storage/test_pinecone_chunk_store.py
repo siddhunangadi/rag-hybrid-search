@@ -44,7 +44,11 @@ def test_put_creates_record_with_placeholder_vector(mock_client):
     call_kwargs = mock_index.upsert.call_args.kwargs
     vectors = call_kwargs["vectors"]
     assert vectors[0]["id"] == "c1"
-    assert vectors[0]["values"] == [0.0, 0.0, 0.0]
+    # Pinecone rejects an all-zero dense vector -- the placeholder must have
+    # exactly one non-zero component (found against a real index; see
+    # tests/storage/test_pinecone_live.py and the module docstring).
+    assert vectors[0]["values"][0] != 0.0
+    assert vectors[0]["values"][1:] == [0.0, 0.0]
     assert vectors[0]["metadata"]["document_id"] == "d1"
     assert vectors[0]["metadata"]["text"] == "hello world"
     assert vectors[0]["metadata"]["source_path"] == "doc.md"
@@ -146,9 +150,18 @@ def _metadata(document_id, chunk_index, text, source_path=""):
     }
 
 
+def _list_page(*chunk_ids):
+    """index.list() yields ListResponse pages (page.vectors is a list of
+    ListItem objects with .id), not plain id strings -- this mock must match
+    that shape, or a bug in code that assumes list() yields raw id lists
+    would pass its mocked test while breaking against a real index (as
+    happened here; see the _scan_all fix in pinecone_chunk_store.py)."""
+    return MagicMock(vectors=[MagicMock(id=cid) for cid in chunk_ids])
+
+
 def test_get_by_document_scans_and_filters_client_side(mock_client):
     client, mock_index = mock_client
-    mock_index.list.return_value = iter([["c1", "c2"]])
+    mock_index.list.return_value = iter([_list_page("c1", "c2")])
     mock_index.fetch.return_value = MagicMock(
         vectors={
             "c1": MagicMock(metadata=_metadata("d1", 0, "hello")),
@@ -162,7 +175,7 @@ def test_get_by_document_scans_and_filters_client_side(mock_client):
 
 def test_get_document_hash_scans_and_filters_client_side(mock_client):
     client, mock_index = mock_client
-    mock_index.list.return_value = iter([["c1"]])
+    mock_index.list.return_value = iter([_list_page("c1")])
     mock_index.fetch.return_value = MagicMock(
         vectors={"c1": MagicMock(metadata=_metadata("d1", 0, "hello", source_path="doc.md"))}
     )
@@ -175,7 +188,7 @@ def test_get_by_legal_metadata_scans_and_filters_client_side(mock_client):
     client, mock_index = mock_client
     metadata = _metadata("d1", 0, "hello")
     metadata["legal_regulation"] = "GDPR"
-    mock_index.list.return_value = iter([["c1"]])
+    mock_index.list.return_value = iter([_list_page("c1")])
     mock_index.fetch.return_value = MagicMock(vectors={"c1": MagicMock(metadata=metadata)})
     store = PineconeChunkStore(client, embedding_dimension=3)
     chunks = store.get_by_legal_metadata({"regulation": "GDPR"})

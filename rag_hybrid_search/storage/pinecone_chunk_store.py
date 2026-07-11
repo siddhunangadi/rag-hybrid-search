@@ -33,6 +33,11 @@ _LEGAL_FILTER_KEYS = {
 # almost all of this payload's size -- everything else here is short fields.
 _MAX_METADATA_BYTES = 40 * 1024
 
+# Pinecone rejects an all-zero dense vector as invalid -- put()'s placeholder
+# vector needs one non-zero component, negligible enough not to skew cosine
+# similarity before PineconeVectorStore.upsert() overwrites it for real.
+_PLACEHOLDER_EPSILON = 1e-6
+
 
 class MetadataTooLargeError(ValueError):
     pass
@@ -119,7 +124,7 @@ class PineconeChunkStore(ChunkStore):
         # chunk_store.put() BEFORE vector_store.upsert() for a given chunk,
         # so this is usually the first write for a new chunk_id -- the
         # record may not exist yet, and index.update() would fail/no-op on
-        # a nonexistent id. upsert() with a placeholder zero-vector creates
+        # a nonexistent id. upsert() with a placeholder vector creates
         # the record (or overwrites metadata on an existing one, e.g. a
         # re-ingested document), and PineconeVectorStore.upsert() -- called
         # second -- then update()s in the real vector values without
@@ -127,7 +132,14 @@ class PineconeChunkStore(ChunkStore):
         metadata = _chunk_to_metadata(chunk, source_path)
         self._index.upsert(vectors=[{
             "id": chunk.chunk_id,
-            "values": [0.0] * self._embedding_dimension,
+            # Pinecone rejects an all-zero dense vector ("Dense vectors must
+            # contain at least one non-zero value") -- discovered against a
+            # real index, not covered by mocked unit tests. A single tiny
+            # epsilon in the first component satisfies that check while
+            # staying negligible for cosine similarity; PineconeVectorStore
+            # .upsert() (called second, per the ordering above) immediately
+            # overwrites this with the real vector via index.update().
+            "values": [_PLACEHOLDER_EPSILON] + [0.0] * (self._embedding_dimension - 1),
             "metadata": metadata,
         }])
 
@@ -138,8 +150,18 @@ class PineconeChunkStore(ChunkStore):
         return _metadata_to_chunk(chunk_id, result.vectors[chunk_id].metadata)
 
     def _scan_all(self) -> Iterator[tuple[str, dict]]:
-        for id_batch in self._index.list():
-            fetched = self._index.fetch(ids=id_batch)
+        # index.list() yields ListResponse pages (page.vectors is a list of
+        # ListItem objects with .id), not plain id strings -- fetch() needs
+        # the extracted ids, not the page object itself. Found running the
+        # live test (tests/storage/test_pinecone_live.py) against a real
+        # index: the original form silently iterated zero pages/vectors
+        # instead of raising, since an empty page-shaped-wrong request
+        # returns no matches rather than a type error.
+        for page in self._index.list():
+            ids = [item.id for item in page.vectors]
+            if not ids:
+                continue
+            fetched = self._index.fetch(ids=ids)
             for chunk_id, vector in fetched.vectors.items():
                 yield chunk_id, vector.metadata
 

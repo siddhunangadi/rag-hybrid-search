@@ -69,6 +69,49 @@ def test_get_by_chunk_id_reconstructs_chunk(mock_client):
     assert chunk.page is None     # sentinel -1 round-trips back to None
 
 
+def test_get_round_trips_legal_metadata(mock_client):
+    """A chunk matched by get_by_legal_metadata must come back with that
+    same legal_metadata populated, not dropped -- _metadata_to_chunk must
+    reconstruct LegalMetadata from the legal_* fields it wrote, not just
+    read the plain fields."""
+    client, mock_index = mock_client
+    mock_index.fetch.return_value = MagicMock(
+        vectors={
+            "c1": MagicMock(metadata={
+                "document_id": "d1", "chunk_index": 0, "text": "hello world",
+                "strategy_version": "fixed-v1", "heading": "", "page": -1,
+                "char_count": 11, "source_path": "doc.md",
+                "legal_regulation": "GDPR", "legal_version": "",
+                "legal_jurisdiction": "", "legal_article": "", "legal_section": "",
+                "legal_clause": "", "legal_effective_date": "2024-01-01",
+                "legal_document_type": "regulation",
+            })
+        }
+    )
+    store = PineconeChunkStore(client, embedding_dimension=3)
+    chunk = store.get("c1")
+    assert chunk.legal_metadata is not None
+    assert chunk.legal_metadata.regulation == "GDPR"
+    assert chunk.legal_metadata.document_type == "regulation"
+    assert str(chunk.legal_metadata.effective_date) == "2024-01-01"
+
+
+def test_put_writes_legal_effective_date(mock_client):
+    from datetime import date
+    from rag_hybrid_search.compliance.regulation_models import LegalMetadata
+
+    client, mock_index = mock_client
+    chunk = _chunk().model_copy(update={
+        "legal_metadata": LegalMetadata(
+            document_id="d1", document_title="d1", effective_date=date(2024, 1, 1),
+        )
+    })
+    store = PineconeChunkStore(client, embedding_dimension=3)
+    store.put(chunk, source_path="doc.md")
+    metadata = mock_index.upsert.call_args.kwargs["vectors"][0]["metadata"]
+    assert metadata["legal_effective_date"] == "2024-01-01"
+
+
 def test_get_missing_chunk_returns_none(mock_client):
     client, mock_index = mock_client
     mock_index.fetch.return_value = MagicMock(vectors={})

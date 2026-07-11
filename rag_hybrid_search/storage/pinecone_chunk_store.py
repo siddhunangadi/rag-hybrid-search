@@ -18,6 +18,7 @@ directly, unlike query/list).
 """
 from typing import Iterator, Optional
 
+from rag_hybrid_search.compliance.regulation_models import LegalMetadata
 from rag_hybrid_search.models import Chunk
 from rag_hybrid_search.storage.base import ChunkStore
 from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
@@ -57,6 +58,7 @@ def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
             "legal_article": lm.article or "",
             "legal_section": lm.section or "",
             "legal_clause": lm.clause or "",
+            "legal_effective_date": lm.effective_date.isoformat() if lm.effective_date else "",
             "legal_document_type": lm.document_type or "",
         })
     import json
@@ -71,7 +73,24 @@ def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
     return metadata
 
 
+_LEGAL_ROUND_TRIP_FIELDS = _LEGAL_FILTER_KEYS | {"effective_date"}
+
+
 def _metadata_to_chunk(chunk_id: str, metadata: dict) -> Chunk:
+    legal_metadata = None
+    if any(metadata.get(f"legal_{field}") for field in _LEGAL_ROUND_TRIP_FIELDS):
+        legal_metadata = LegalMetadata(
+            document_id=metadata["document_id"],
+            document_title=metadata["document_id"],
+            regulation=metadata.get("legal_regulation") or None,
+            version=metadata.get("legal_version") or None,
+            jurisdiction=metadata.get("legal_jurisdiction") or None,
+            article=metadata.get("legal_article") or None,
+            section=metadata.get("legal_section") or None,
+            clause=metadata.get("legal_clause") or None,
+            effective_date=metadata.get("legal_effective_date") or None,
+            document_type=metadata.get("legal_document_type") or None,
+        )
     return Chunk(
         chunk_id=chunk_id,
         document_id=metadata["document_id"],
@@ -81,6 +100,7 @@ def _metadata_to_chunk(chunk_id: str, metadata: dict) -> Chunk:
         heading=metadata["heading"] or None,
         page=metadata["page"] if metadata["page"] != -1 else None,
         char_count=metadata["char_count"],
+        legal_metadata=legal_metadata,
     )
 
 

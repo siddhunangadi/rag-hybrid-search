@@ -1,6 +1,6 @@
-# rag-hybrid-search
+# Lumen
 
-A grounded, citation-verified RAG pipeline: hybrid (dense + sparse) retrieval with reranking, feeding a generation stage that verifies every claim against retrieved source text and scores its own confidence.
+A grounded, citation-verified RAG pipeline: hybrid (dense + sparse) retrieval with reranking and comparative-query decomposition, feeding a generation stage that verifies every claim against retrieved source text and scores its own confidence.
 
 **Diagrams:** [plain-English walkthrough](https://claude.ai/code/artifact/53c664d3-aaad-4f7b-8b59-a7b47b952869) (six flows, analogies, no engineering background needed) · [technical reference](https://claude.ai/code/artifact/872c6f00-3d13-4294-bd97-0700a18f52f4) (component diagram, request sequences, storage schema, RRF math)
 
@@ -21,18 +21,24 @@ flowchart TD
     end
 
     subgraph Retrieval
-        Q[Query] --> H[DenseRetriever]
-        Q --> I[SparseRetriever]
+        Q[Query] --> QD{Comparative?}
+        QD -->|yes| DC[Query Decomposer]
+        QD -->|no| H
+        DC --> H[DenseRetriever]
+        DC --> I[SparseRetriever]
+        Q --> H
+        Q --> I
         E --> H
         F --> I
         H --> J[Fusion - RRF]
         I --> J
         J --> K[Reranker]
-        K --> L[HybridRetriever]
+        K --> PR[Adaptive Pruning]
+        PR --> L[HybridRetriever]
     end
 
     subgraph Generation
-        L --> M[ContextBuilder]
+        L --> M[ContextBuilder - flat / grouped]
         M --> N[PromptBuilder]
         N --> O[GenerationProvider]
         O --> P[CitationVerifier]
@@ -43,14 +49,17 @@ flowchart TD
 
 Two packages:
 
-- `rag_hybrid_search/` — ingestion (loaders, chunkers, dedup), storage (Chroma dense store, BM25 sparse index, chunk store), retrieval (dense, sparse, RRF fusion, reranking, `HybridRetriever` orchestrator), and provider clients (NVIDIA, Ollama).
-- `rag_pipeline/` — grounded generation on top of retrieval: `ContextBuilder`, `PromptBuilder`, `GenerationProvider` protocol + `MockProvider`, `CitationVerifier`, `ConfidenceScorer`, and the `RagPipeline` orchestrator.
+- `rag_hybrid_search/` — ingestion (loaders, chunkers, dedup), storage (Chroma dense store, BM25 sparse index, chunk store), retrieval (dense, sparse, RRF fusion, reranking, `HybridRetriever` orchestrator), provider clients (NVIDIA, Ollama), and a `compliance/` submodule (clause-aware chunking/parsing and citation mapping for regulation-style documents).
+- `rag_pipeline/` — grounded generation on top of retrieval: query decomposition for comparative questions, adaptive score-margin pruning, `ContextBuilder` (flat or grouped-by-subquery layout), `PromptBuilder`, `GenerationProvider` protocol + `MockProvider`, `CitationVerifier`, `ConfidenceScorer`, the `RagPipeline` orchestrator, and an `eval/` submodule for offline quality regression testing.
 
 ## Key design points
 
 - **Citation verification is not trust-based.** Every claim the model emits must cite chunk IDs, and `CitationVerifier` checks the claim's quote is actually substring-present (containment score against the retrieved chunk text) before it counts as verified. Unverifiable claims are flagged, not silently kept.
 - **Confidence is deterministic, not another LLM call.** `ConfidenceScorer` combines retrieval quality, citation verification rate, and context coverage into `overall`/`retrieval`/`citations`/`coverage` scores — auditable and reproducible.
 - **Generation failures degrade gracefully.** If the provider errors or returns unparseable output, `RagPipeline.answer()` returns a `RagAnswer` with `error` set and zeroed confidence instead of raising.
+- **Comparative questions get decomposed, not flattened.** A question like "How do RQ1 and RQ2 differ?" is detected, split into per-concept subqueries, retrieved independently, then merged with frequency-aware scoring — so a chunk surfaced by multiple subqueries outranks one lucky embedding match.
+- **Pruning never starves a comparative answer of evidence.** Score-margin pruning drops low-signal chunks, but the evidence floor (`min_keep`) scales with how many subqueries were asked (`max(3 if comparative else 1, len(subqueries))`), so a 4-subquery decomposition can't collapse down to a single chunk.
+- **Context assembly is presentation-only.** `ContextBuilder` never decides which chunks exist — retrieval and pruning finalize that. It only orders/formats/assigns citation ids, in a flat list (default) or grouped by the subquery that retrieved each chunk (opt-in, see [Comparative retrieval](#comparative-retrieval)).
 
 ## Usage
 
@@ -86,6 +95,20 @@ pipeline = RagPipeline(retriever=retriever, generation_provider=GeminiProvider(a
 
 `NvidiaProvider` (`rag_hybrid_search/providers/nvidia.py`) is also available behind the same `GenerationProvider` interface if you have an NVIDIA API key.
 
+## Comparative retrieval
+
+Questions that ask for a comparison ("how do X and Y differ", "compare A vs B") are detected by a cheap regex heuristic (`is_comparative_query`), decomposed into per-concept subqueries via an LLM call, and retrieved independently — each subquery gets its own full dense+sparse+fuse+rerank pass, then results merge with a frequency bonus for chunks that surface under multiple subqueries.
+
+By default, the merged context is rendered as a flat numbered list (`ContextLayout.FLAT`), identical to non-comparative questions. Opt into grouped rendering — chunks sectioned under the subquery that retrieved them, with citation numbering staying global across sections — via:
+
+```python
+from rag_pipeline.context_builder import ContextLayout
+
+pipeline = RagPipeline(retriever, provider, context_layout=ContextLayout.GROUPED)
+```
+
+Non-comparative (single-subquery) questions always render flat regardless of this setting. Grouped layout is not the default anywhere yet — see [docs/superpowers/specs/2026-07-11-grouped-context-adaptive-budget-design.md](docs/superpowers/specs/2026-07-11-grouped-context-adaptive-budget-design.md) for the evaluation gate (comparative accuracy, hallucination rate, verification pass rate, token/latency deltas) required before flipping that default.
+
 ## API
 
 A thin FastAPI service (`api/`) exposes the same pipeline over HTTP, in addition to the library usage above — the library remains directly importable exactly as documented in [Usage](#usage).
@@ -104,8 +127,8 @@ Swagger/OpenAPI docs are auto-available at `http://localhost:8000/docs` (FastAPI
 ### Run via Docker
 
 ```bash
-docker build -t rag-hybrid-search .
-docker run --rm -p 8000:8000 rag-hybrid-search
+docker build -t lumen .
+docker run --rm -p 8000:8000 lumen
 ```
 
 ### Endpoints
@@ -258,13 +281,13 @@ uv sync
 uv run pytest -q
 ```
 
-**193/195 tests passing** (2 skipped — live-provider tests that need real API keys), full suite runtime ~90s on a local M-series MacBook.
+**359/361 tests passing** (2 skipped — live-provider tests that need real API keys), full suite runtime ~100s on a local M-series MacBook.
 
 ## Docker
 
 ```bash
-docker build -t rag-hybrid-search .
-docker run --rm -p 8000:8000 rag-hybrid-search
+docker build -t lumen .
+docker run --rm -p 8000:8000 lumen
 ```
 
 The image installs dependencies via `uv` and launches the FastAPI service via `uvicorn` on port 8000 as its default command (see [API](#api) above).
@@ -277,14 +300,24 @@ rag_hybrid_search/
   storage/        chroma_store, bm25_index, chunk_store, index_manager
   retrieval/      dense, sparse, fusion (RRF), rerank, retriever
   providers/      nvidia, ollama client wrappers
+  compliance/     clause_chunker, clause_parser, citation_mapper, query_router
+                  (clause-aware handling for regulation-style documents)
+  models.py       pydantic contracts (Chunk, RetrievedChunk, ContextChunk,
+                  ChunkProvenance, ...)
+  trace.py        RequestTrace (TRACE_RAG-gated per-request dev trace)
 rag_pipeline/
   models.py               pydantic contracts (Claim, RagAnswer, ...)
-  context_builder.py
+  query_decomposer.py     is_comparative_query, decompose_query
+  context_pruning.py      score-margin pruning with adaptive min_keep
+  context_builder.py      flat / grouped-by-subquery rendering (ContextLayout)
   prompt_builder.py
   generation_provider.py  protocol + MockProvider
   citation_verifier.py
+  quote_extractor.py
   confidence_scorer.py
   rag_pipeline.py         orchestrator
+  eval/                   offline evaluation harness: questions, judge, metrics,
+                           report, baseline storage, regression comparison
 api/
   main.py           FastAPI app instance + startup wiring
   routes.py         /answer, /answer/stream, /index, /upload, /upload/async,
@@ -292,13 +325,21 @@ api/
   jobs.py           in-memory JobStore, single-worker background ingestion
   schemas.py        request/response pydantic models
   dependencies.py   singleton construction + provider fallback selection
+frontend/
+  index.html, css/, js/    vanilla HTML/CSS/JS UI, served as static files
+scripts/
+  run_eval.py, check_baseline.py    evaluation + regression CLI
+  benchmark.py, debug_retrieval.py  retrieval benchmark, trace inspection
+eval/
+  questions.yaml, thresholds.yaml   evaluation question set + regression tiers
+  baselines/, reports/              stored baselines, generated reports
 docs/superpowers/
   specs/, plans/          design docs this codebase was built from
 ```
 
 ## Status
 
-v1.2.0 — core hybrid retrieval + grounded generation pipeline, a FastAPI HTTP layer (`api/`) backed by a persistent on-disk index under `data_dir`, streaming answers (SSE), async background ingestion, document deletion, and table-aware PDF parsing. 193 tests green. Usable both as a library (unchanged) and as a service.
+Core hybrid retrieval + grounded generation pipeline, a FastAPI HTTP layer (`api/`) backed by a persistent on-disk index under `data_dir`, streaming answers (SSE), async background ingestion, document deletion, table-aware PDF parsing, comparative-query decomposition with adaptive pruning and grouped context assembly, and an offline evaluation harness with baseline-backed regression detection (`scripts/run_eval.py`, gated in CI). 359 tests green. Usable both as a library (unchanged) and as a service.
 
 **Known scaling limits** (by design, not yet addressed): BM25 index is fully in-RAM (no sharding past tens of thousands of documents), SQLite chunk store is single-file (fine for one instance, not for concurrent writers across multiple app instances), and there's no multi-tenant auth. All three require external infra (Elasticsearch/OpenSearch, Postgres, an auth layer) that this project doesn't provision — see the diagrams above for where they'd slot in.
 

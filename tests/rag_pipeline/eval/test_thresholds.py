@@ -7,7 +7,7 @@ def test_missing_path_returns_defaults(tmp_path):
     t = load_thresholds(tmp_path / "nope.yaml")
     assert t == DEFAULT_THRESHOLDS
     assert t.metrics["citation_precision"].fail == 0.05
-    assert t.metrics["judge_score"].warn == 0.05
+    assert t.metrics["accuracy"].warn == 0.05
     assert t.error_count.warn == 0
     assert t.error_count.fail == 1
     assert t.per_question_fail == 0.5

@@ -52,17 +52,17 @@ def test_improvement_is_info_and_never_gates():
 
 
 def test_judge_skipped_when_absent_on_either_side():
-    base = _snap(objective={"citation_f1": 0.9}, subjective={"judge_score": 0.9})
+    base = _snap(objective={"citation_f1": 0.9}, subjective={"accuracy": 0.9})
     cur = _snap(objective={"citation_f1": 0.9}, subjective=None)
     result = compare(cur, base, DEFAULT_THRESHOLDS)
-    assert _findings_by(result, "judge_score") == []
+    assert _findings_by(result, "accuracy") == []
 
 
 def test_judge_compared_when_present_both_sides():
-    base = _snap(objective={"citation_f1": 0.9}, subjective={"judge_score": 0.9})
-    cur = _snap(objective={"citation_f1": 0.9}, subjective={"judge_score": 0.75})
+    base = _snap(objective={"citation_f1": 0.9}, subjective={"accuracy": 0.9})
+    cur = _snap(objective={"citation_f1": 0.9}, subjective={"accuracy": 0.75})
     result = compare(cur, base, DEFAULT_THRESHOLDS)
-    assert _findings_by(result, "judge_score")[0].status == "fail"           # -0.15
+    assert _findings_by(result, "accuracy")[0].status == "fail"           # -0.15
 
 
 def test_error_count_tiers():

@@ -43,7 +43,7 @@ def compare(
 
     # Aggregate objective + judge metrics.
     for name, tiers in thresholds.metrics.items():
-        if name == "judge_score":
+        if name == "accuracy":
             base_side, cur_side = baseline.summary.subjective, current.summary.subjective
         else:
             base_side, cur_side = baseline.summary.objective, current.summary.objective
@@ -81,7 +81,7 @@ def compare(
         if cur_q is None:
             continue  # hash equality means sets match; defensive only
         for name in thresholds.metrics:
-            if name == "judge_score":
+            if name == "accuracy":
                 continue
             base_val = _as_float(base_q.objective_metrics.get(name))
             cur_val = _as_float(cur_q.objective_metrics.get(name))

@@ -13,7 +13,7 @@ DEFAULT_THRESHOLDS = Thresholds(
         "citation_recall": MetricThreshold(warn=0.02, fail=0.05),
         "citation_f1": MetricThreshold(warn=0.02, fail=0.05),
         "coverage": MetricThreshold(warn=0.02, fail=0.05),
-        "judge_score": MetricThreshold(warn=0.05, fail=0.10),
+        "accuracy": MetricThreshold(warn=0.05, fail=0.10),
     },
     error_count=MetricThreshold(warn=0, fail=1),
     per_question_fail=0.5,

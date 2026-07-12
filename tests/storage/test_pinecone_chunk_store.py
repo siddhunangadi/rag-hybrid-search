@@ -80,11 +80,13 @@ def test_put_many_splits_into_multiple_batches_over_batch_size(mock_client):
 
     store.put_many(chunks, source_path="doc.md")
 
+    # Batches are dispatched concurrently, so their arrival order isn't
+    # guaranteed -- assert on the set of batch sizes, not call order.
     assert mock_index.upsert.call_count == 2
-    first_batch = mock_index.upsert.call_args_list[0].kwargs["vectors"]
-    second_batch = mock_index.upsert.call_args_list[1].kwargs["vectors"]
-    assert len(first_batch) == _UPSERT_BATCH_SIZE
-    assert len(second_batch) == 10
+    batch_sizes = sorted(
+        len(call.kwargs["vectors"]) for call in mock_index.upsert.call_args_list
+    )
+    assert batch_sizes == sorted([_UPSERT_BATCH_SIZE, 10])
 
 
 def test_get_by_chunk_id_reconstructs_chunk(mock_client):

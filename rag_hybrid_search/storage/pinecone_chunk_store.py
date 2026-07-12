@@ -16,6 +16,7 @@ all()/get_document_summaries/delete_by_document (delete_by_document is the
 one exception: Pinecone's delete endpoint does accept a metadata filter
 directly, unlike query/list).
 """
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator, Optional
 
 from rag_hybrid_search.compliance.regulation_models import LegalMetadata
@@ -154,6 +155,13 @@ class PineconeChunkStore(ChunkStore):
         # index.upsert() calls as possible instead of one call per chunk --
         # ingesting a document with a few hundred chunks used to mean a few
         # hundred sequential network round-trips just for this step.
+        #
+        # The batches themselves are dispatched concurrently, not one after
+        # another: each batch writes disjoint chunk ids, so there's no
+        # ordering dependency between them, and observed against a real
+        # index, a single ~100-vector batch's write-processing time (not
+        # round-trip latency) was the dominant cost -- running batches
+        # sequentially just adds them up instead of overlapping them.
         placeholder_values = [_PLACEHOLDER_EPSILON] + [0.0] * (self._embedding_dimension - 1)
         vectors = [
             {
@@ -163,8 +171,14 @@ class PineconeChunkStore(ChunkStore):
             }
             for chunk in chunks
         ]
-        for i in range(0, len(vectors), _UPSERT_BATCH_SIZE):
-            self._index.upsert(vectors=vectors[i : i + _UPSERT_BATCH_SIZE])
+        batches = [
+            vectors[i : i + _UPSERT_BATCH_SIZE]
+            for i in range(0, len(vectors), _UPSERT_BATCH_SIZE)
+        ]
+        with ThreadPoolExecutor(max_workers=len(batches) or 1) as executor:
+            futures = [executor.submit(self._index.upsert, vectors=batch) for batch in batches]
+            for future in futures:
+                future.result()
 
     def get(self, chunk_id: str) -> Optional[Chunk]:
         result = self._index.fetch(ids=[chunk_id])

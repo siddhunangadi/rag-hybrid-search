@@ -4,9 +4,7 @@ import pytest
 
 from rag_hybrid_search.models import Chunk, EmbeddingRecord
 from rag_hybrid_search.retrieval.dense import DenseRetriever
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, fake_pinecone_stores
 
 
 def make_chunk(chunk_id, text):
@@ -23,10 +21,9 @@ def make_chunk(chunk_id, text):
 
 
 @pytest.fixture
-def retriever(tmp_path):
+def retriever():
     provider = FakeEmbeddingProvider()
-    vector_store = ChromaVectorStore(data_dir=str(tmp_path / "chroma"))
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
+    chunk_store, vector_store = fake_pinecone_stores(embedding_dimension=provider.dimension)
     chunks = {
         "c1": make_chunk("c1", "hybrid retrieval combines dense and sparse search"),
         "c2": make_chunk("c2", "the weather today is sunny and warm"),

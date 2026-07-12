@@ -4,9 +4,8 @@ import pytest
 
 from rag_hybrid_search.models import Chunk, EmbeddingRecord, IndexStatus
 from rag_hybrid_search.storage.bm25_index import BM25Index
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
+from tests.fakes import fake_pinecone_stores
 
 
 def make_chunk(chunk_id, document_id="d1", text="hello world"):
@@ -35,8 +34,7 @@ def make_record(chunk_id, embedding=(1.0, 0.0, 0.0)):
 
 @pytest.fixture
 def manager(tmp_path):
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
-    vector_store = ChromaVectorStore(data_dir=str(tmp_path / "chroma"))
+    chunk_store, vector_store = fake_pinecone_stores(embedding_dimension=3)
     bm25 = BM25Index(index_path=str(tmp_path / "bm25.pkl"))
     return IndexManager(chunk_store, vector_store, bm25)
 

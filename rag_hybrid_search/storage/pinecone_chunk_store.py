@@ -19,7 +19,7 @@ directly, unlike query/list).
 from typing import Iterator, Optional
 
 from rag_hybrid_search.compliance.regulation_models import LegalMetadata
-from rag_hybrid_search.models import Chunk
+from rag_hybrid_search.models import Chunk, ChunkEmbedding
 from rag_hybrid_search.storage.base import ChunkStore
 from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 
@@ -149,7 +149,7 @@ class PineconeChunkStore(ChunkStore):
             return None
         return _metadata_to_chunk(chunk_id, result.vectors[chunk_id].metadata)
 
-    def _scan_all(self) -> Iterator[tuple[str, dict]]:
+    def _scan_all(self) -> Iterator[tuple[str, dict, list[float]]]:
         # index.list() yields ListResponse pages (page.vectors is a list of
         # ListItem objects with .id), not plain id strings -- fetch() needs
         # the extracted ids, not the page object itself. Found running the
@@ -157,24 +157,28 @@ class PineconeChunkStore(ChunkStore):
         # index: the original form silently iterated zero pages/vectors
         # instead of raising, since an empty page-shaped-wrong request
         # returns no matches rather than a type error.
+        #
+        # fetch() already returns each vector's .values (the embedding)
+        # alongside .metadata in the same response -- yielding it here lets
+        # all_with_embeddings() reuse it instead of a caller re-embedding.
         for page in self._index.list():
             ids = [item.id for item in page.vectors]
             if not ids:
                 continue
             fetched = self._index.fetch(ids=ids)
             for chunk_id, vector in fetched.vectors.items():
-                yield chunk_id, vector.metadata
+                yield chunk_id, vector.metadata, vector.values
 
     def get_by_document(self, document_id: str) -> list[Chunk]:
         chunks = [
             _metadata_to_chunk(chunk_id, metadata)
-            for chunk_id, metadata in self._scan_all()
+            for chunk_id, metadata, _values in self._scan_all()
             if metadata.get("document_id") == document_id
         ]
         return sorted(chunks, key=lambda c: c.chunk_index)
 
     def get_document_hash(self, source_path: str) -> Optional[str]:
-        for chunk_id, metadata in self._scan_all():
+        for chunk_id, metadata, _values in self._scan_all():
             if metadata.get("source_path") == source_path:
                 return metadata.get("document_id")
         return None
@@ -183,8 +187,15 @@ class PineconeChunkStore(ChunkStore):
         self._index.delete(filter={"document_id": {"$eq": document_id}})
 
     def all(self) -> Iterator[Chunk]:
-        for chunk_id, metadata in self._scan_all():
+        for chunk_id, metadata, _values in self._scan_all():
             yield _metadata_to_chunk(chunk_id, metadata)
+
+    def all_with_embeddings(self) -> Iterator[ChunkEmbedding]:
+        for chunk_id, metadata, values in self._scan_all():
+            yield ChunkEmbedding(
+                chunk=_metadata_to_chunk(chunk_id, metadata),
+                embedding=list(values),
+            )
 
     def get_by_legal_metadata(self, filters: dict[str, str]) -> list[Chunk]:
         if not filters:
@@ -193,14 +204,14 @@ class PineconeChunkStore(ChunkStore):
         if unknown:
             raise ValueError(f"unknown legal metadata filter key: {next(iter(unknown))!r}")
         matched = []
-        for chunk_id, metadata in self._scan_all():
+        for chunk_id, metadata, _values in self._scan_all():
             if all(metadata.get(f"legal_{key}") == value for key, value in filters.items()):
                 matched.append(_metadata_to_chunk(chunk_id, metadata))
         return sorted(matched, key=lambda c: (c.document_id, c.chunk_index))
 
     def get_document_summaries(self) -> list[dict]:
         counts: dict[str, dict] = {}
-        for chunk_id, metadata in self._scan_all():
+        for chunk_id, metadata, _values in self._scan_all():
             document_id = metadata.get("document_id")
             entry = counts.setdefault(
                 document_id,

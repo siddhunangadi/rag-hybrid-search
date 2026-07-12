@@ -56,8 +56,6 @@ from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
 from rag_hybrid_search.storage.base import ChunkStore
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
 from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 from rag_hybrid_search.storage.pinecone_vector_store import PineconeVectorStore
@@ -67,8 +65,6 @@ from rag_pipeline.rag_pipeline import RagPipeline
 from tests.fakes import FakeEmbeddingProvider
 
 _UPLOADS_DIRNAME = "uploads"
-_CHUNK_DB_FILENAME = "chunks.db"
-_CHROMA_DIRNAME = "chroma"
 _BM25_INDEX_FILENAME = "bm25.pkl"
 
 
@@ -178,27 +174,22 @@ def build_container(settings: Settings | None = None) -> Container:
     embedding_provider, embedding_provider_name, nvidia_provider = _select_embedding_provider(settings)
     generation_provider, generation_provider_name = _select_generation_provider(settings, nvidia_provider)
 
-    if settings.storage_backend == "pinecone":
-        pinecone_connection = PineconeConnection(
-            api_key=settings.pinecone_api_key,
-            index_name=settings.pinecone_index_name,
-            environment=settings.pinecone_environment,
-        )
-        vector_store = PineconeVectorStore(pinecone_connection)
-        chunk_store = PineconeChunkStore(
-            pinecone_connection, embedding_dimension=embedding_provider.dimension,
-        )
-        bm25_index = BM25Index(index_path=str(data_dir / _BM25_INDEX_FILENAME))
-        bm25_index.load()  # Phase 1: sparse still local even on pinecone backend; Task 5 replaces this line
-    else:
-        chunk_store = SqliteChunkStore(db_path=str(data_dir / _CHUNK_DB_FILENAME))
-        vector_store = ChromaVectorStore(data_dir=str(data_dir / _CHROMA_DIRNAME))
-        bm25_index = BM25Index(index_path=str(data_dir / _BM25_INDEX_FILENAME))
-        # BM25Index.__init__ starts empty (no disk read) -- without this, every
-        # process restart silently wipes sparse/keyword retrieval to zero
-        # results until the next document upload rebuilds it, even though
-        # bm25.pkl on disk still has the full corpus indexed.
-        bm25_index.load()
+    pinecone_connection = PineconeConnection(
+        api_key=settings.pinecone_api_key,
+        index_name=settings.pinecone_index_name,
+        environment=settings.pinecone_environment,
+    )
+    vector_store = PineconeVectorStore(pinecone_connection)
+    chunk_store = PineconeChunkStore(
+        pinecone_connection, embedding_dimension=embedding_provider.dimension,
+    )
+    bm25_index = BM25Index(index_path=str(data_dir / _BM25_INDEX_FILENAME))
+    # BM25Index.__init__ starts empty (no disk read) -- without this, every
+    # process restart silently wipes sparse/keyword retrieval to zero
+    # results until the next document upload rebuilds it, even though
+    # bm25.pkl on disk still has the full corpus indexed. Sparse index stays
+    # local even on the pinecone backend (Task 5 of the migration migrates it).
+    bm25_index.load()
     index_manager = IndexManager(chunk_store, vector_store, bm25_index)
 
     chunker = RecursiveChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)

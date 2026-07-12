@@ -9,10 +9,8 @@ from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker
 from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, fake_pinecone_stores
 
 SAMPLE_DOCS = [
     "tests/fixtures/sample_docs/setup.md",
@@ -24,8 +22,7 @@ SAMPLE_DOCS = [
 @pytest.fixture
 def system(tmp_path):
     provider = FakeEmbeddingProvider()
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
-    vector_store = ChromaVectorStore(data_dir=str(tmp_path / "chroma"))
+    chunk_store, vector_store = fake_pinecone_stores(embedding_dimension=provider.dimension)
     bm25 = BM25Index(index_path=str(tmp_path / "bm25.pkl"))
     index_manager = IndexManager(chunk_store, vector_store, bm25)
 

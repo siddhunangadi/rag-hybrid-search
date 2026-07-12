@@ -9,9 +9,7 @@ from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker
 from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, fake_pinecone_stores
 
 
 class RecordingRerankProvider(RerankProvider):
@@ -61,8 +59,7 @@ def build_retriever(tmp_path, docs, rerank_provider, **kwargs):
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     provider = FakeEmbeddingProvider()
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
-    vector_store = ChromaVectorStore(data_dir=str(tmp_path / "chroma"))
+    chunk_store, vector_store = fake_pinecone_stores(embedding_dimension=provider.dimension)
     bm25 = BM25Index(index_path=str(tmp_path / "bm25.pkl"))
 
     for chunk in docs:
@@ -106,8 +103,7 @@ def build_retriever(tmp_path, docs, rerank_provider, **kwargs):
 def hybrid_retriever(tmp_path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     provider = FakeEmbeddingProvider()
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
-    vector_store = ChromaVectorStore(data_dir=str(tmp_path / "chroma"))
+    chunk_store, vector_store = fake_pinecone_stores(embedding_dimension=provider.dimension)
     bm25 = BM25Index(index_path=str(tmp_path / "bm25.pkl"))
 
     docs = [

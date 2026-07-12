@@ -26,6 +26,15 @@ class Chunk(BaseModel):
     legal_metadata: Optional[LegalMetadata] = None
 
 
+class ChunkEmbedding(BaseModel):
+    """A chunk paired with its already-computed embedding, as returned by
+    ChunkStore.all_with_embeddings() -- lets ingestion dedup reuse embeddings
+    the vector store already has instead of recomputing them."""
+
+    chunk: Chunk
+    embedding: list[float]
+
+
 class EmbeddingRecord(BaseModel):
     chunk_id: str
     embedding: list[float]

@@ -3,7 +3,7 @@ import pytest
 from rag_hybrid_search.models import Chunk
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
+from tests.fakes import fake_pinecone_stores
 
 
 def make_chunk(chunk_id, text):
@@ -21,7 +21,7 @@ def make_chunk(chunk_id, text):
 
 @pytest.fixture
 def retriever(tmp_path):
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
+    chunk_store, _vector_store = fake_pinecone_stores()
     bm25 = BM25Index(index_path=str(tmp_path / "bm25.pkl"))
     chunks = [
         make_chunk("c1", "how to resolve ERROR_CODE_0x834 during deployment"),

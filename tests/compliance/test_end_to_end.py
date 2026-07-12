@@ -10,10 +10,8 @@ from rag_hybrid_search.retrieval.passthrough_rerank import PassthroughReranker
 from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, fake_pinecone_stores
 
 _GDPR_TEXT = """Article 5
 
@@ -32,8 +30,7 @@ def _build_pipeline_components(
     regulation: str | None = None,
     jurisdiction: str | None = None,
 ):
-    chunk_store = SqliteChunkStore(db_path=f"{tmp_dir}/chunks.db")
-    vector_store = ChromaVectorStore(data_dir=f"{tmp_dir}/chroma")
+    chunk_store, vector_store = fake_pinecone_stores()
     bm25_index = BM25Index(index_path=f"{tmp_dir}/bm25.pkl")
     index_manager = IndexManager(chunk_store, vector_store, bm25_index)
     embedding_provider = FakeEmbeddingProvider()

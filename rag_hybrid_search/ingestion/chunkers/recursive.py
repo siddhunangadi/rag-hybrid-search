@@ -1,6 +1,7 @@
 import re
 
 from rag_hybrid_search.ingestion.chunkers.base import Chunker
+from rag_hybrid_search.ingestion.chunkers.windowing import sliding_window
 from rag_hybrid_search.models import Chunk, Document
 from rag_hybrid_search.uuid7 import uuid7
 
@@ -57,10 +58,4 @@ class RecursiveChunker(Chunker):
     def _split_by_size(self, text: str) -> list[str]:
         if len(text) <= self._chunk_size:
             return [text]
-        step = self._chunk_size - self._chunk_overlap
-        pieces = []
-        position = 0
-        while position < len(text):
-            pieces.append(text[position : position + self._chunk_size])
-            position += step
-        return pieces
+        return sliding_window(text, self._chunk_size, self._chunk_overlap)

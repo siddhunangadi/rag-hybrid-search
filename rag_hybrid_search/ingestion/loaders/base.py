@@ -20,3 +20,7 @@ class Loader(ABC):
             content=content,
             format=self.format,
         )
+
+    def _read_text_file(self, path: str) -> str:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()

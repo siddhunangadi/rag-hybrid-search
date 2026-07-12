@@ -46,13 +46,17 @@ def _package_version() -> str:
         return "unknown"
 
 
-def _git_commit() -> str:
+def _git(*args: str) -> str:
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL,
+            ["git", *args], text=True, stderr=subprocess.DEVNULL,
         ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
+
+
+def _git_commit() -> str:
+    return _git("rev-parse", "HEAD")
 
 
 def _sanitized_settings(settings) -> dict:
@@ -111,12 +115,7 @@ def _pipeline_config(settings) -> dict:
 
 
 def _git_branch() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True, stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
+    return _git("rev-parse", "--abbrev-ref", "HEAD")
 
 
 def main() -> None:

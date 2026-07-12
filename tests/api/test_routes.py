@@ -1,7 +1,10 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 
 from api.main import create_app
+from tests.fakes import FakePineconeIndex
 
 
 @pytest.fixture
@@ -10,14 +13,21 @@ def client(tmp_path, monkeypatch):
 
     No real API keys are set in this sandbox, so the app is expected to fall
     back to MockProvider (generation) and FakeEmbeddingProvider (embedding).
+    Pinecone (the only supported vector/chunk store) is faked out via
+    FakePineconeIndex -- a working in-memory index -- so these tests stay
+    hermetic and don't need a real Pinecone account.
     """
     monkeypatch.delenv("RAG_NVIDIA_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("RAG_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RAG_PINECONE_API_KEY", "fake-key")
+    monkeypatch.setenv("RAG_PINECONE_INDEX_NAME", "fake-index")
 
-    app = create_app()
-    with TestClient(app) as test_client:
-        yield test_client
+    with patch("rag_hybrid_search.storage.pinecone_connection.Pinecone") as mock_pc_cls:
+        mock_pc_cls.return_value.Index = MagicMock(return_value=FakePineconeIndex())
+        app = create_app()
+        with TestClient(app) as test_client:
+            yield test_client
 
 
 def test_health_reports_mock_and_fake_fallback(client, tmp_path):
@@ -254,23 +264,28 @@ def test_debug_retrieval_exposes_fusion_and_rerank_as_separate_stages(monkeypatc
     monkeypatch.delenv("RAG_GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("RAG_DEBUG_TOKEN", "test-token")
     monkeypatch.setenv("RAG_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RAG_PINECONE_API_KEY", "fake-key")
+    monkeypatch.setenv("RAG_PINECONE_INDEX_NAME", "fake-index")
     from api.main import create_app
-    app = create_app()
-    with TestClient(app) as debug_client:
-        debug_client.post(
-            "/index",
-            json={"documents": [{"filename": "leave.txt", "content": "Employees get 20 days of paid annual leave per year."}]},
-        )
 
-        response = debug_client.get(
-            "/debug/retrieval",
-            params={"query": "How many days of leave?"},
-            headers={"X-Debug-Token": "test-token"},
-        )
+    with patch("rag_hybrid_search.storage.pinecone_connection.Pinecone") as mock_pc_cls:
+        mock_pc_cls.return_value.Index = MagicMock(return_value=FakePineconeIndex())
+        app = create_app()
+        with TestClient(app) as debug_client:
+            debug_client.post(
+                "/index",
+                json={"documents": [{"filename": "leave.txt", "content": "Employees get 20 days of paid annual leave per year."}]},
+            )
 
-        assert response.status_code == 200
-        body = response.json()
-        assert "rrf_results" in body
-        assert "rerank_results" in body
-        assert len(body["rrf_results"]) > 0
-        assert len(body["rerank_results"]) > 0
+            response = debug_client.get(
+                "/debug/retrieval",
+                params={"query": "How many days of leave?"},
+                headers={"X-Debug-Token": "test-token"},
+            )
+
+            assert response.status_code == 200
+            body = response.json()
+            assert "rrf_results" in body
+            assert "rerank_results" in body
+            assert len(body["rrf_results"]) > 0
+            assert len(body["rerank_results"]) > 0

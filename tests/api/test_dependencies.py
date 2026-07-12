@@ -4,16 +4,9 @@ from api.dependencies import build_container
 from rag_hybrid_search.config import Settings
 
 
-def test_build_container_defaults_to_local_backend(tmp_path):
-    settings = Settings(data_dir=str(tmp_path))
-    container = build_container(settings)
-    from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-    assert isinstance(container.index_manager.vector_store, ChromaVectorStore)
-
-
 def test_build_container_wires_pinecone_backend(tmp_path):
     settings = Settings(
-        data_dir=str(tmp_path), storage_backend="pinecone",
+        data_dir=str(tmp_path),
         pinecone_api_key="k", pinecone_index_name="idx",
     )
     with patch("api.dependencies.PineconeConnection") as mock_client_cls, \

@@ -6,6 +6,5 @@ class MarkdownLoader(Loader):
     format = "markdown"
 
     def load(self, path: str) -> Document:
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = self._read_text_file(path)
         return self._build_document(path, content)

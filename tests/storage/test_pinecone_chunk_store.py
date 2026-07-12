@@ -173,6 +173,24 @@ def test_get_by_document_scans_and_filters_client_side(mock_client):
     assert [c.chunk_id for c in chunks] == ["c1"]
 
 
+def test_all_with_embeddings_returns_chunk_and_stored_vector(mock_client):
+    """all_with_embeddings() must reuse the embedding already present in
+    fetch()'s response instead of requiring a caller to re-embed -- this is
+    the fix for ingestion re-embedding the whole corpus on every ingest()."""
+    client, mock_index = mock_client
+    mock_index.list.return_value = iter([_list_page("c1")])
+    mock_index.fetch.return_value = MagicMock(
+        vectors={
+            "c1": MagicMock(metadata=_metadata("d1", 0, "hello"), values=[0.1, 0.2, 0.3]),
+        }
+    )
+    store = PineconeChunkStore(client, embedding_dimension=3)
+    items = list(store.all_with_embeddings())
+    assert len(items) == 1
+    assert items[0].chunk.chunk_id == "c1"
+    assert items[0].embedding == [0.1, 0.2, 0.3]
+
+
 def test_get_document_hash_scans_and_filters_client_side(mock_client):
     client, mock_index = mock_client
     mock_index.list.return_value = iter([_list_page("c1")])

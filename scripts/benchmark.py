@@ -21,11 +21,9 @@ from rag_hybrid_search.retrieval.rerank import CrossEncoderReranker
 from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_hybrid_search.retrieval.sparse import SparseRetriever
 from rag_hybrid_search.storage.bm25_index import BM25Index
-from rag_hybrid_search.storage.chroma_store import ChromaVectorStore
-from rag_hybrid_search.storage.chunk_store import SqliteChunkStore
 from rag_hybrid_search.storage.index_manager import IndexManager
 
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, fake_pinecone_stores
 from tests.fixtures.benchmark_queries import BENCHMARK_QUERIES
 
 _SAMPLE_DOCS_DIR = Path(__file__).resolve().parent.parent / "tests/fixtures/sample_docs"
@@ -38,8 +36,7 @@ class BenchmarkCorpus:
 
 
 def build_benchmark_corpus(tmp_path) -> BenchmarkCorpus:
-    chunk_store = SqliteChunkStore(db_path=str(tmp_path / "chunks.db"))
-    vector_store = ChromaVectorStore(data_dir=str(tmp_path / "chroma"))
+    chunk_store, vector_store = fake_pinecone_stores()
     bm25_index = BM25Index(index_path=str(tmp_path / "bm25.pkl"))
     index_manager = IndexManager(chunk_store, vector_store, bm25_index)
     embedding_provider = FakeEmbeddingProvider()

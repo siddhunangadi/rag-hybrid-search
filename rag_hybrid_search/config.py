@@ -58,12 +58,8 @@ class Settings(BaseSettings):
 
     data_dir: str = "./data"
 
-    # Selects the storage backend for vectors/chunks/sparse index. "local" is
-    # unchanged Chroma+SQLite+BM25 behavior. "pinecone" is Phase 1/2 of the
-    # ephemeral-disk migration (see docs/superpowers/specs/2026-07-11-pinecone-storage-migration-design.md) --
-    # one flag, not three, since local and pinecone are the only two
-    # combinations this project runs.
-    storage_backend: Literal["local", "pinecone"] = "local"
+    # Pinecone is the only supported vector/chunk store; the sparse (BM25)
+    # index stays local on disk regardless.
     pinecone_api_key: Optional[str] = None
     pinecone_index_name: Optional[str] = None
     pinecone_environment: Optional[str] = None

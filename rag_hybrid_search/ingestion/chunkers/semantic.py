@@ -3,18 +3,10 @@ import re
 from rag_hybrid_search.ingestion.chunkers.base import Chunker
 from rag_hybrid_search.models import Chunk, Document
 from rag_hybrid_search.providers.base import EmbeddingProvider
+from rag_hybrid_search.similarity import cosine_similarity
 from rag_hybrid_search.uuid7 import uuid7
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 class SemanticChunker(Chunker):
@@ -35,7 +27,7 @@ class SemanticChunker(Chunker):
 
         groups: list[list[str]] = [[sentences[0]]]
         for i in range(1, len(sentences)):
-            similarity = _cosine(embeddings[i - 1], embeddings[i])
+            similarity = cosine_similarity(embeddings[i - 1], embeddings[i])
             if similarity >= self._similarity_threshold:
                 groups[-1].append(sentences[i])
             else:

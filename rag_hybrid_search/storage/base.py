@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Iterator, Optional
 
-from rag_hybrid_search.models import Chunk, EmbeddingRecord
+from rag_hybrid_search.models import Chunk, ChunkEmbedding, EmbeddingRecord
 
 
 class VectorStore(ABC):
@@ -41,6 +41,14 @@ class ChunkStore(ABC):
 
     @abstractmethod
     def all(self) -> Iterator[Chunk]:
+        ...
+
+    @abstractmethod
+    def all_with_embeddings(self) -> Iterator[ChunkEmbedding]:
+        """Like all(), but also returns each chunk's already-computed
+        embedding when the backing store already has it available (e.g.
+        alongside the vector it stores), so callers like ingestion dedup
+        don't need to recompute embeddings for existing chunks."""
         ...
 
     @abstractmethod

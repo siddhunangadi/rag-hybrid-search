@@ -29,9 +29,9 @@ flowchart TD
     end
 
     subgraph Storage
-        D --> E[ChromaStore - dense]
+        D --> E[PineconeVectorStore - dense]
         D --> F[BM25Index - sparse]
-        D --> G[ChunkStore]
+        D --> G[PineconeChunkStore]
     end
 
     subgraph Retrieval
@@ -63,7 +63,7 @@ flowchart TD
 
 Two packages:
 
-- `rag_hybrid_search/` — ingestion (loaders, chunkers, dedup), storage (Chroma dense store, BM25 sparse index, chunk store), retrieval (dense, sparse, RRF fusion, reranking, `HybridRetriever` orchestrator), provider clients (NVIDIA, Ollama), and a `compliance/` submodule (clause-aware chunking/parsing and citation mapping for regulation-style documents).
+- `rag_hybrid_search/` — ingestion (loaders, chunkers, dedup), storage (Pinecone dense vector store + chunk store, BM25 sparse index), retrieval (dense, sparse, RRF fusion, reranking, `HybridRetriever` orchestrator), provider clients (NVIDIA, Ollama), and a `compliance/` submodule (clause-aware chunking/parsing and citation mapping for regulation-style documents).
 - `rag_pipeline/` — grounded generation on top of retrieval: query decomposition for comparative questions, adaptive score-margin pruning, `ContextBuilder` (flat or grouped-by-subquery layout), `PromptBuilder`, `GenerationProvider` protocol + `MockProvider`, `CitationVerifier`, `ConfidenceScorer`, the `RagPipeline` orchestrator, and an `eval/` submodule for offline quality regression testing.
 
 ## Key design points
@@ -82,7 +82,7 @@ from rag_hybrid_search.retrieval.retriever import HybridRetriever
 from rag_pipeline.rag_pipeline import RagPipeline
 from rag_pipeline.generation_provider import MockProvider
 
-retriever = HybridRetriever(...)  # wired to your ChromaStore/BM25Index
+retriever = HybridRetriever(...)  # wired to your PineconeVectorStore/BM25Index
 pipeline = RagPipeline(retriever=retriever, generation_provider=MockProvider())
 
 result = pipeline.answer("How many days of paid leave do employees get?")
@@ -311,7 +311,7 @@ The image installs dependencies via `uv` and launches the FastAPI service via `u
 ```
 rag_hybrid_search/
   ingestion/      loaders, chunkers, dedup
-  storage/        chroma_store, bm25_index, chunk_store, index_manager
+  storage/        pinecone_vector_store, pinecone_chunk_store, pinecone_connection, bm25_index, index_manager
   retrieval/      dense, sparse, fusion (RRF), rerank, retriever
   providers/      nvidia, ollama client wrappers
   compliance/     clause_chunker, clause_parser, citation_mapper, query_router

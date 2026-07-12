@@ -10,6 +10,13 @@ class VectorStore(ABC):
         ...
 
     @abstractmethod
+    def upsert_many(self, chunk_ids: list[str], embedding_records: list[EmbeddingRecord]) -> None:
+        """Write many vectors faster than calling upsert() once per id in a
+        loop -- implementations may parallelize, batch, or both, as long as
+        the end result is the same as calling upsert() for every pair."""
+        ...
+
+    @abstractmethod
     def query(self, embedding: list[float], k: int) -> list[tuple[str, float]]:
         ...
 
@@ -33,6 +40,13 @@ class ChunkStore(ABC):
 
     @abstractmethod
     def put(self, chunk: Chunk) -> None:
+        ...
+
+    @abstractmethod
+    def put_many(self, chunks: list[Chunk], source_path: Optional[str] = None) -> None:
+        """Write many chunks faster than calling put() once per chunk in a
+        loop -- implementations may batch the underlying writes, as long as
+        the end result is the same as calling put() for every chunk."""
         ...
 
     @abstractmethod

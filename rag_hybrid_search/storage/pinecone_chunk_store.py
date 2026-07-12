@@ -38,6 +38,12 @@ _MAX_METADATA_BYTES = 40 * 1024
 # similarity before PineconeVectorStore.upsert() overwrites it for real.
 _PLACEHOLDER_EPSILON = 1e-6
 
+# Conservative batch size for a single index.upsert() call -- keeps well
+# under Pinecone's per-request size limits even for chunks with large text
+# payloads (see _MAX_METADATA_BYTES above), while still turning what used
+# to be one network round-trip per chunk into one every N chunks.
+_UPSERT_BATCH_SIZE = 100
+
 
 class MetadataTooLargeError(ValueError):
     pass
@@ -142,6 +148,23 @@ class PineconeChunkStore(ChunkStore):
             "values": [_PLACEHOLDER_EPSILON] + [0.0] * (self._embedding_dimension - 1),
             "metadata": metadata,
         }])
+
+    def put_many(self, chunks: list[Chunk], source_path: Optional[str] = None) -> None:
+        # Same placeholder-vector write as put(), batched into as few
+        # index.upsert() calls as possible instead of one call per chunk --
+        # ingesting a document with a few hundred chunks used to mean a few
+        # hundred sequential network round-trips just for this step.
+        placeholder_values = [_PLACEHOLDER_EPSILON] + [0.0] * (self._embedding_dimension - 1)
+        vectors = [
+            {
+                "id": chunk.chunk_id,
+                "values": placeholder_values,
+                "metadata": _chunk_to_metadata(chunk, source_path),
+            }
+            for chunk in chunks
+        ]
+        for i in range(0, len(vectors), _UPSERT_BATCH_SIZE):
+            self._index.upsert(vectors=vectors[i : i + _UPSERT_BATCH_SIZE])
 
     def get(self, chunk_id: str) -> Optional[Chunk]:
         result = self._index.fetch(ids=[chunk_id])

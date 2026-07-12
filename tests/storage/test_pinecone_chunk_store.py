@@ -54,6 +54,39 @@ def test_put_creates_record_with_placeholder_vector(mock_client):
     assert vectors[0]["metadata"]["source_path"] == "doc.md"
 
 
+def test_put_many_batches_into_one_upsert_call(mock_client):
+    """put_many() must batch all chunks into as few index.upsert() calls as
+    possible instead of one call per chunk -- this is the ingestion-latency
+    fix: writing N chunks used to mean N sequential round-trips."""
+    client, mock_index = mock_client
+    store = PineconeChunkStore(client, embedding_dimension=3)
+    chunks = [_chunk(chunk_id=f"c{i}") for i in range(5)]
+
+    store.put_many(chunks, source_path="doc.md")
+
+    mock_index.upsert.assert_called_once()
+    vectors = mock_index.upsert.call_args.kwargs["vectors"]
+    assert len(vectors) == 5
+    assert {v["id"] for v in vectors} == {f"c{i}" for i in range(5)}
+    assert all(v["metadata"]["source_path"] == "doc.md" for v in vectors)
+
+
+def test_put_many_splits_into_multiple_batches_over_batch_size(mock_client):
+    from rag_hybrid_search.storage.pinecone_chunk_store import _UPSERT_BATCH_SIZE
+
+    client, mock_index = mock_client
+    store = PineconeChunkStore(client, embedding_dimension=3)
+    chunks = [_chunk(chunk_id=f"c{i}") for i in range(_UPSERT_BATCH_SIZE + 10)]
+
+    store.put_many(chunks, source_path="doc.md")
+
+    assert mock_index.upsert.call_count == 2
+    first_batch = mock_index.upsert.call_args_list[0].kwargs["vectors"]
+    second_batch = mock_index.upsert.call_args_list[1].kwargs["vectors"]
+    assert len(first_batch) == _UPSERT_BATCH_SIZE
+    assert len(second_batch) == 10
+
+
 def test_get_by_chunk_id_reconstructs_chunk(mock_client):
     client, mock_index = mock_client
     mock_index.fetch.return_value = MagicMock(

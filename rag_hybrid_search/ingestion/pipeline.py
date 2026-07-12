@@ -101,8 +101,7 @@ class IngestionPipeline:
             logger.info("ingest: nothing new to store, done path=%s", path)
             return IndexStatus.READY
 
-        for chunk in surviving_chunks:
-            self.chunk_store.put(chunk, source_path=path)
+        self.chunk_store.put_many(surviving_chunks, source_path=path)
         logger.info(
             "ingest: stored %d chunks in chunk_store rss_mb=%.1f",
             len(surviving_chunks), rss_mb(),

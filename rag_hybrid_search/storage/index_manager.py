@@ -22,8 +22,7 @@ class IndexManager:
         self, chunks: list[Chunk], embeddings: list[EmbeddingRecord]
     ) -> IndexStatus:
         try:
-            for chunk, record in zip(chunks, embeddings):
-                self.vector_store.upsert(chunk.chunk_id, record)
+            self.vector_store.upsert_many([c.chunk_id for c in chunks], embeddings)
             self.rebuild_bm25_index()
         except Exception:
             # Previously swallowed silently with no log at all -- meant a

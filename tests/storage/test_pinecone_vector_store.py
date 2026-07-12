@@ -42,6 +42,21 @@ def test_upsert_updates_vector_values_on_existing_record(mock_client):
     mock_index.update.assert_called_once_with(id="c1", values=[0.1, 0.2, 0.3])
 
 
+def test_upsert_many_updates_every_vector(mock_client):
+    """upsert_many() must produce the same effect as calling upsert() once
+    per (chunk_id, record) pair -- concurrently, not differently."""
+    client, mock_index = mock_client
+    store = PineconeVectorStore(client)
+    chunk_ids = [f"c{i}" for i in range(5)]
+    records = [_embedding_record(chunk_id) for chunk_id in chunk_ids]
+
+    store.upsert_many(chunk_ids, records)
+
+    assert mock_index.update.call_count == 5
+    called_ids = {call.kwargs["id"] for call in mock_index.update.call_args_list}
+    assert called_ids == set(chunk_ids)
+
+
 def test_query_returns_chunk_id_score_pairs(mock_client):
     client, mock_index = mock_client
     mock_index.query.return_value = MagicMock(

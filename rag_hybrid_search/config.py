@@ -7,18 +7,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RAG_")
 
+    environment: Literal["development", "production"] = "development"
+
     provider: Literal["nvidia", "gemini"] = "gemini"
-    nvidia_api_key: Optional[str] = None
-    gemini_api_key: Optional[str] = None
+    nvidia_api_key: str | None = None
+    gemini_api_key: str | None = None
     # Overrides NvidiaProvider's own default generation model (currently the
     # 70B model, which dominates request latency). Unset -> NvidiaProvider's
     # built-in default, unchanged behavior.
-    generation_model: Optional[str] = None
+    generation_model: str | None = None
 
     # Gates GET /debug/retrieval, which exposes raw indexed chunk text and
     # full prompts. Unset (default) -> endpoint returns 404. Set this to a
     # random secret and pass it as the X-Debug-Token header to enable it.
-    debug_token: Optional[str] = None
+    debug_token: str | None = None
 
     chunking_strategy: Literal["fixed", "recursive", "semantic"] = "recursive"
     chunk_size: int = 500
@@ -60,10 +62,56 @@ class Settings(BaseSettings):
 
     # Pinecone is the only supported vector/chunk store; the sparse (BM25)
     # index stays local on disk regardless.
-    pinecone_api_key: Optional[str] = None
-    pinecone_index_name: Optional[str] = None
-    pinecone_environment: Optional[str] = None
-    pinecone_sparse_index_name: Optional[str] = None
+    pinecone_api_key: str | None = None
+    pinecone_index_name: str | None = None
+    pinecone_environment: str | None = None
+    pinecone_sparse_index_name: str | None = None
+
+    max_upload_size_bytes: int = 20 * 1024 * 1024
+    cors_allow_origins: str = ""
+    api_keys: str = ""
+    rate_limit_per_minute: int = 60
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    @property
+    def api_keys_by_key(self) -> dict[str, str]:
+        """Parse ``api_keys`` into ``{key: role}``, validating roles eagerly."""
+        parsed: dict[str, str] = {}
+        for entry in self.api_keys.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key, _, role = entry.partition(":")
+            if role not in ("admin", "reader"):
+                raise ValueError(
+                    f"invalid role {role!r} in RAG_API_KEYS entry {entry!r}; must be 'admin' or 'reader'"
+                )
+            parsed[key] = role
+        return parsed
+
+    @model_validator(mode="after")
+    def _validate_production_requirements(self) -> "Settings":
+        """Fail fast at startup instead of silently degrading in production."""
+        if self.environment == "production":
+            missing = []
+            if not (self.gemini_api_key or self.nvidia_api_key):
+                missing.append("RAG_GEMINI_API_KEY or RAG_NVIDIA_API_KEY (generation)")
+            if not self.nvidia_api_key:
+                missing.append("RAG_NVIDIA_API_KEY (embeddings)")
+            if not self.pinecone_api_key:
+                missing.append("RAG_PINECONE_API_KEY")
+            if not self.pinecone_index_name:
+                missing.append("RAG_PINECONE_INDEX_NAME")
+            if not self.api_keys:
+                missing.append("RAG_API_KEYS (at least one admin/reader key)")
+            if missing:
+                raise ValueError(
+                    "RAG_ENVIRONMENT=production requires: " + "; ".join(missing)
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_weights_and_k(self) -> "Settings":

@@ -35,12 +35,15 @@ should be an explicit choice):
       before relying on it in production.
 """
 
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from api.jobs import JobStore
+from rag_hybrid_search.audit import AuditLog
 from rag_hybrid_search.config import Settings
 from rag_hybrid_search.ingestion.chunkers.base import Chunker
 from rag_hybrid_search.ingestion.chunkers.recursive import RecursiveChunker
@@ -66,6 +69,69 @@ from tests.fakes import FakeEmbeddingProvider
 
 _UPLOADS_DIRNAME = "uploads"
 _BM25_INDEX_FILENAME = "bm25.pkl"
+_AUDIT_LOG_FILENAME = "audit_log.jsonl"
+
+
+class Metrics:
+    """In-process operational counters, no external metrics backend.
+
+    ponytail: plain dict + running sum/count, not a histogram -- fine for
+    single-instance/portfolio scale. Swap for prometheus_client if this ever
+    needs percentiles or cross-instance aggregation.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[str, int] = {}
+        self._latency_total_ms = 0.0
+        self._latency_count = 0
+
+    def increment(self, name: str, n: int = 1) -> None:
+        with self._lock:
+            self._counts[name] = self._counts.get(name, 0) + n
+
+    def record_latency(self, duration_ms: float) -> None:
+        with self._lock:
+            self._latency_total_ms += duration_ms
+            self._latency_count += 1
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            avg_latency_ms = (
+                self._latency_total_ms / self._latency_count if self._latency_count else 0.0
+            )
+            return {
+                "counts": dict(self._counts),
+                "avg_latency_ms": round(avg_latency_ms, 2),
+                "request_count": self._latency_count,
+            }
+
+
+class RateLimiter:
+    """Fixed-window per-identifier rate limiter, process-local (no Redis/DB).
+
+    ponytail: single fixed window, not sliding -- fine for the one-instance
+    deployment this project targets. Swap for a sliding window or a
+    Redis-backed limiter if this ever runs as multiple replicas.
+    """
+
+    def __init__(self, limit_per_minute: int):
+        self.limit = limit_per_minute
+        self._lock = threading.Lock()
+        self._windows: dict[str, tuple[int, int]] = {}
+
+    def check(self, identifier: str) -> None:
+        if self.limit <= 0:
+            return
+        window = int(time.time() // 60)
+        with self._lock:
+            start, count = self._windows.get(identifier, (window, 0))
+            if start != window:
+                start, count = window, 0
+            count += 1
+            self._windows[identifier] = (start, count)
+        if count > self.limit:
+            raise HTTPException(status_code=429, detail="rate limit exceeded")
 
 
 @dataclass
@@ -83,6 +149,9 @@ class Container:
     rag_pipeline: RagPipeline
     uploads_dir: Path
     job_store: JobStore
+    rate_limiter: RateLimiter
+    audit_log: AuditLog
+    metrics: Metrics
 
     def build_ingestion_pipeline(self, loader: Loader, chunker: Chunker | None = None) -> IngestionPipeline:
         """Build an ``IngestionPipeline`` for a specific loader, reusing shared singletons.
@@ -190,7 +259,8 @@ def build_container(settings: Settings | None = None) -> Container:
     # bm25.pkl on disk still has the full corpus indexed. Sparse index stays
     # local even on the pinecone backend (Task 5 of the migration migrates it).
     bm25_index.load()
-    index_manager = IndexManager(chunk_store, vector_store, bm25_index)
+    audit_log = AuditLog(data_dir / _AUDIT_LOG_FILENAME)
+    index_manager = IndexManager(chunk_store, vector_store, bm25_index, audit_log=audit_log)
 
     chunker = RecursiveChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
 
@@ -223,9 +293,41 @@ def build_container(settings: Settings | None = None) -> Container:
         rag_pipeline=rag_pipeline,
         uploads_dir=uploads_dir,
         job_store=JobStore(),
+        rate_limiter=RateLimiter(settings.rate_limit_per_minute),
+        audit_log=audit_log,
+        metrics=Metrics(),
     )
 
 
 def get_container(request: Request) -> Container:
     """FastAPI dependency returning the app-lifetime ``Container`` built at startup."""
     return request.app.state.container
+
+
+def check_readiness(container: Container) -> list[dict]:
+    """Run every readiness probe, catching failures per-component.
+
+    Each check is a cheap metadata/stat call (see the ``ping()`` docstrings
+    on PineconeChunkStore/BM25Index/AuditLog) -- safe to run on every
+    request, never a full embedding call or corpus scan. The embedding
+    provider has no network round-trip here (that would be an expensive
+    operation on every readiness probe); it's reported as configured/not.
+    """
+    results = []
+    for name, target in (("pinecone", container.chunk_store), ("audit", container.audit_log)):
+        try:
+            target.ping()
+            results.append({"name": name, "ok": True, "detail": None})
+        except Exception as e:  # noqa: BLE001 - report as a failed check, not a 500
+            results.append({"name": name, "ok": False, "detail": str(e)})
+
+    try:
+        container.index_manager.bm25_index.ping()
+        results.append({"name": "bm25", "ok": True, "detail": None})
+    except Exception as e:  # noqa: BLE001
+        results.append({"name": "bm25", "ok": False, "detail": str(e)})
+
+    results.append(
+        {"name": "embedding_provider", "ok": container.embedding_provider is not None, "detail": None}
+    )
+    return results

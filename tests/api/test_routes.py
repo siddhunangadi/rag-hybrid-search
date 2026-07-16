@@ -41,6 +41,38 @@ def test_health_reports_mock_and_fake_fallback(client, tmp_path):
     assert body["data_dir"] == str(tmp_path / "data")
 
 
+def test_liveness_reports_alive_with_no_dependencies(client):
+    response = client.get("/health/live")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "alive"}
+
+
+def test_readiness_reports_ready_when_dependencies_are_up(client):
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    names = {c["name"] for c in body["checks"]}
+    assert names == {"pinecone", "audit", "bm25", "embedding_provider"}
+    assert all(c["ok"] for c in body["checks"])
+
+
+def test_diagnostics_reports_operational_state(client):
+    response = client.get("/diagnostics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["build"]["name"] == "rag-hybrid-search"
+    assert body["providers"]["generation"] == "mock"
+    assert body["providers"]["embedding"] == "fake"
+    assert body["ingestion_stats"] == {"total_documents": 0, "total_chunks": 0}
+    assert body["audit_stats"]["total_events"] >= 0
+    assert body["config"]["gemini_api_key"] in (True, False)
+    assert body["metrics"]["request_count"] >= 0
+
+
 def test_version_reads_installed_package_metadata(client):
     response = client.get("/version")
 
@@ -108,6 +140,41 @@ def test_index_filename_with_path_traversal_cannot_escape_uploads_dir(client, tm
     assert escaped == []
 
 
+def test_upload_rejects_file_exceeding_max_size(monkeypatch, tmp_path):
+    monkeypatch.delenv("RAG_NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RAG_PINECONE_API_KEY", "fake-key")
+    monkeypatch.setenv("RAG_PINECONE_INDEX_NAME", "fake-index")
+    monkeypatch.setenv("RAG_MAX_UPLOAD_SIZE_BYTES", "10")
+
+    with patch("rag_hybrid_search.storage.pinecone_connection.Pinecone") as mock_pc_cls:
+        mock_pc_cls.return_value.Index = MagicMock(return_value=FakePineconeIndex())
+        app = create_app()
+        with TestClient(app) as sized_client:
+            response = sized_client.post(
+                "/upload",
+                files=[("files", ("big.txt", b"x" * 100, "text/plain"))],
+            )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert results[0]["status"] == "failed"
+    assert "exceeds max upload size" in results[0]["error"]
+
+
+def test_upload_rejects_content_not_matching_pdf_magic_bytes(client):
+    response = client.post(
+        "/upload",
+        files=[("files", ("fake.pdf", b"not actually a pdf", "application/pdf"))],
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert results[0]["status"] == "failed"
+    assert "does not match expected format" in results[0]["error"]
+
+
 def test_upload_filename_with_path_traversal_cannot_escape_uploads_dir(client, tmp_path):
     response = client.post(
         "/upload",
@@ -158,6 +225,19 @@ def test_answer_rejects_blank_question(client):
     assert response.status_code == 400
 
 
+def test_answer_returns_generic_message_on_unexpected_error(client):
+    with patch(
+        "rag_hybrid_search.retrieval.retriever.HybridRetriever.retrieve",
+        side_effect=RuntimeError("secret internal detail: /etc/pinecone-key.txt"),
+    ):
+        response = client.post("/answer", json={"question": "does this leak internals?"})
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail == "internal error answering question"
+    assert "secret internal detail" not in detail
+
+
 def test_documents_reports_empty_corpus(client):
     response = client.get("/documents")
 
@@ -191,6 +271,25 @@ def test_docs_endpoint_is_available(client):
     response = client.get("/docs")
 
     assert response.status_code == 200
+
+
+def test_cors_header_present_only_for_allowlisted_origin(monkeypatch, tmp_path):
+    monkeypatch.delenv("RAG_NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RAG_PINECONE_API_KEY", "fake-key")
+    monkeypatch.setenv("RAG_PINECONE_INDEX_NAME", "fake-index")
+    monkeypatch.setenv("RAG_CORS_ALLOW_ORIGINS", "https://allowed.example.com")
+
+    with patch("rag_hybrid_search.storage.pinecone_connection.Pinecone") as mock_pc_cls:
+        mock_pc_cls.return_value.Index = MagicMock(return_value=FakePineconeIndex())
+        app = create_app()
+        with TestClient(app) as cors_client:
+            allowed = cors_client.get("/health", headers={"Origin": "https://allowed.example.com"})
+            blocked = cors_client.get("/health", headers={"Origin": "https://evil.example.com"})
+
+    assert allowed.headers.get("access-control-allow-origin") == "https://allowed.example.com"
+    assert "access-control-allow-origin" not in blocked.headers
 
 
 _GDPR_TEXT = """Article 5

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import hashlib
 from types import SimpleNamespace
 
@@ -74,9 +75,14 @@ class FakePineconeIndex:
                 "metadata": dict(v.get("metadata") or {}),
             }
 
-    def update(self, id: str, values: list[float]) -> None:
+    def update(
+        self, id: str, values: list[float] | None = None, set_metadata: dict | None = None,
+    ) -> None:
         self._records.setdefault(id, {"values": [], "metadata": {}})
-        self._records[id]["values"] = list(values)
+        if values is not None:
+            self._records[id]["values"] = list(values)
+        if set_metadata is not None:
+            self._records[id]["metadata"].update(set_metadata)
 
     def fetch(self, ids: list[str]) -> SimpleNamespace:
         vectors = {
@@ -92,6 +98,9 @@ class FakePineconeIndex:
     def list(self):
         ids = list(self._records.keys())
         yield SimpleNamespace(vectors=[SimpleNamespace(id=cid) for cid in ids])
+
+    def describe_index_stats(self) -> SimpleNamespace:
+        return SimpleNamespace(total_vector_count=len(self._records))
 
     def query(self, vector: list[float], top_k: int, include_metadata: bool = False) -> SimpleNamespace:
         def cosine(a: list[float], b: list[float]) -> float:

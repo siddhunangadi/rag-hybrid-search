@@ -1,8 +1,8 @@
 """PineconeChunkStore: metadata-only operations against the same Pinecone
 index PineconeVectorStore writes vectors to (shared via PineconeConnection).
 
-Metadata sentinels: Optional[str] fields (heading, source_path) store "" for
-None, Optional[int] (page) stores -1 for None -- both reconstructed back to
+Metadata sentinels: str | None fields (heading, source_path) store "" for
+None, int | None (page) stores -1 for None -- both reconstructed back to
 None on read, since Pinecone metadata doesn't reliably support None values
 across all SDK/client versions.
 
@@ -17,17 +17,23 @@ one exception: Pinecone's delete endpoint does accept a metadata filter
 directly, unlike query/list).
 """
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterator, Optional
+from typing import Iterator
 
 from rag_hybrid_search.compliance.regulation_models import LegalMetadata
-from rag_hybrid_search.models import Chunk, ChunkEmbedding
+from rag_hybrid_search.models import Chunk, ChunkEmbedding, EmbeddingRecord
 from rag_hybrid_search.storage.base import ChunkStore
 from rag_hybrid_search.storage.pinecone_connection import PineconeConnection
 
 _LEGAL_FILTER_KEYS = {
-    "regulation", "version", "jurisdiction", "article", "section",
-    "clause", "document_type",
+    "regulation", "authority", "version", "jurisdiction", "article", "section",
+    "clause", "document_type", "risk_category",
 }
+
+# Not equality-matched against metadata directly -- get_by_legal_metadata()
+# interprets these specially: is_current ("true"/"false") filters on the
+# is_current flag, as_of_date (ISO date string) keeps only the
+# latest-effective-dated match at or before that date.
+_RESERVED_FILTER_KEYS = {"is_current", "as_of_date"}
 
 
 # Pinecone's per-vector metadata limit is 40KB (serialized). Chunk text is
@@ -50,7 +56,7 @@ class MetadataTooLargeError(ValueError):
     pass
 
 
-def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
+def _chunk_to_metadata(chunk: Chunk, source_path: str | None = None) -> dict:
     lm = chunk.legal_metadata
     metadata = {
         "document_id": chunk.document_id,
@@ -65,6 +71,7 @@ def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
     if lm:
         metadata.update({
             "legal_regulation": lm.regulation or "",
+            "legal_authority": lm.authority or "",
             "legal_version": lm.version or "",
             "legal_jurisdiction": lm.jurisdiction or "",
             "legal_article": lm.article or "",
@@ -72,6 +79,9 @@ def _chunk_to_metadata(chunk: Chunk, source_path: Optional[str] = None) -> dict:
             "legal_clause": lm.clause or "",
             "legal_effective_date": lm.effective_date.isoformat() if lm.effective_date else "",
             "legal_document_type": lm.document_type or "",
+            "legal_risk_category": lm.risk_category or "",
+            "legal_is_current": lm.is_current,
+            "legal_superseded_by": lm.superseded_by or "",
         })
     import json
     serialized_size = len(json.dumps(metadata).encode("utf-8"))
@@ -95,6 +105,7 @@ def _metadata_to_chunk(chunk_id: str, metadata: dict) -> Chunk:
             document_id=metadata["document_id"],
             document_title=metadata["document_id"],
             regulation=metadata.get("legal_regulation") or None,
+            authority=metadata.get("legal_authority") or None,
             version=metadata.get("legal_version") or None,
             jurisdiction=metadata.get("legal_jurisdiction") or None,
             article=metadata.get("legal_article") or None,
@@ -102,6 +113,9 @@ def _metadata_to_chunk(chunk_id: str, metadata: dict) -> Chunk:
             clause=metadata.get("legal_clause") or None,
             effective_date=metadata.get("legal_effective_date") or None,
             document_type=metadata.get("legal_document_type") or None,
+            risk_category=metadata.get("legal_risk_category") or None,
+            is_current=metadata.get("legal_is_current", True),
+            superseded_by=metadata.get("legal_superseded_by") or None,
         )
     return Chunk(
         chunk_id=chunk_id,
@@ -125,7 +139,16 @@ class PineconeChunkStore(ChunkStore):
         # this up in Task 3, not an arbitrary guess.
         self._embedding_dimension = embedding_dimension
 
-    def put(self, chunk: Chunk, source_path: Optional[str] = None) -> None:
+    def ping(self) -> None:
+        """Cheap connectivity check for readiness probes.
+
+        ``describe_index_stats`` is a lightweight metadata call (no vector
+        search), so this is safe to run on every /health/ready request.
+        Raises on failure; callers decide how to report that.
+        """
+        self._index.describe_index_stats()
+
+    def put(self, chunk: Chunk, source_path: str | None = None) -> None:
         # upsert(), not update(): the real ingestion order
         # (rag_hybrid_search/ingestion/pipeline.py:101,104) always calls
         # chunk_store.put() BEFORE vector_store.upsert() for a given chunk,
@@ -150,7 +173,7 @@ class PineconeChunkStore(ChunkStore):
             "metadata": metadata,
         }])
 
-    def put_many(self, chunks: list[Chunk], source_path: Optional[str] = None) -> None:
+    def put_many(self, chunks: list[Chunk], source_path: str | None = None) -> None:
         # Same placeholder-vector write as put(), batched into as few
         # index.upsert() calls as possible instead of one call per chunk --
         # ingesting a document with a few hundred chunks used to mean a few
@@ -180,7 +203,36 @@ class PineconeChunkStore(ChunkStore):
             for future in futures:
                 future.result()
 
-    def get(self, chunk_id: str) -> Optional[Chunk]:
+    def put_many_with_embeddings(
+        self, chunks: list[Chunk], embeddings: list[EmbeddingRecord], source_path: str | None = None,
+    ) -> None:
+        # Pinecone-only fast path: chunk_store and vector_store normally
+        # write in two phases (placeholder upsert here, then a real-vector
+        # update() per id in PineconeVectorStore) because they're separate
+        # ChunkStore/VectorStore backends in the general case. When both
+        # happen to share the same Pinecone index (checked by the caller --
+        # see IndexManager.supports_combined_write()), the real embedding is
+        # already known at metadata-write time, so this writes both in one
+        # upsert -- same batching as put_many(), no placeholder, no
+        # per-id update() call at all.
+        vectors = [
+            {
+                "id": chunk.chunk_id,
+                "values": record.embedding,
+                "metadata": _chunk_to_metadata(chunk, source_path),
+            }
+            for chunk, record in zip(chunks, embeddings)
+        ]
+        batches = [
+            vectors[i : i + _UPSERT_BATCH_SIZE]
+            for i in range(0, len(vectors), _UPSERT_BATCH_SIZE)
+        ]
+        with ThreadPoolExecutor(max_workers=len(batches) or 1) as executor:
+            futures = [executor.submit(self._index.upsert, vectors=batch) for batch in batches]
+            for future in futures:
+                future.result()
+
+    def get(self, chunk_id: str) -> Chunk | None:
         result = self._index.fetch(ids=[chunk_id])
         if chunk_id not in result.vectors:
             return None
@@ -214,7 +266,7 @@ class PineconeChunkStore(ChunkStore):
         ]
         return sorted(chunks, key=lambda c: c.chunk_index)
 
-    def get_document_hash(self, source_path: str) -> Optional[str]:
+    def get_document_hash(self, source_path: str) -> str | None:
         for chunk_id, metadata, _values in self._scan_all():
             if metadata.get("source_path") == source_path:
                 return metadata.get("document_id")
@@ -237,14 +289,46 @@ class PineconeChunkStore(ChunkStore):
     def get_by_legal_metadata(self, filters: dict[str, str]) -> list[Chunk]:
         if not filters:
             return []
-        unknown = set(filters) - _LEGAL_FILTER_KEYS
+        equality_filters = {k: v for k, v in filters.items() if k not in _RESERVED_FILTER_KEYS}
+        unknown = set(equality_filters) - _LEGAL_FILTER_KEYS
         if unknown:
             raise ValueError(f"unknown legal metadata filter key: {next(iter(unknown))!r}")
         matched = []
         for chunk_id, metadata, _values in self._scan_all():
-            if all(metadata.get(f"legal_{key}") == value for key, value in filters.items()):
+            if all(metadata.get(f"legal_{key}") == value for key, value in equality_filters.items()):
                 matched.append(_metadata_to_chunk(chunk_id, metadata))
+
+        is_current = filters.get("is_current")
+        if is_current is not None:
+            want_current = is_current.lower() == "true"
+            matched = [c for c in matched if c.legal_metadata and c.legal_metadata.is_current == want_current]
+
+        as_of_date = filters.get("as_of_date")
+        if as_of_date is not None:
+            eligible = [
+                c for c in matched
+                if c.legal_metadata and c.legal_metadata.effective_date is not None
+                and c.legal_metadata.effective_date.isoformat() <= as_of_date
+            ]
+            if eligible:
+                latest = max(c.legal_metadata.effective_date for c in eligible)
+                matched = [c for c in eligible if c.legal_metadata.effective_date == latest]
+            else:
+                matched = []
+
         return sorted(matched, key=lambda c: (c.document_id, c.chunk_index))
+
+    def update_legal_metadata(self, chunk_id: str, is_current: bool, superseded_by: str | None) -> None:
+        """Metadata-only update -- does not touch the stored vector, so
+        marking an existing chunk superseded doesn't require re-embedding
+        or re-upserting its full payload."""
+        self._index.update(
+            id=chunk_id,
+            set_metadata={
+                "legal_is_current": is_current,
+                "legal_superseded_by": superseded_by or "",
+            },
+        )
 
     def get_document_summaries(self) -> list[dict]:
         counts: dict[str, dict] = {}

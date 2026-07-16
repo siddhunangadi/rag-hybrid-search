@@ -1,7 +1,6 @@
 import pickle
 import re
 from pathlib import Path
-from typing import Optional
 
 from rank_bm25 import BM25Okapi
 
@@ -17,7 +16,7 @@ def _tokenize(text: str) -> list[str]:
 class BM25Index:
     def __init__(self, index_path: str):
         self._index_path = Path(index_path)
-        self._bm25: Optional[BM25Okapi] = None
+        self._bm25: BM25Okapi | None = None
         self._chunk_ids: list[str] = []
 
     def build(self, chunks: list[Chunk]) -> None:
@@ -47,3 +46,12 @@ class BM25Index:
         self._bm25 = data["bm25"]
         self._chunk_ids = data["chunk_ids"]
         return True
+
+    def ping(self) -> None:
+        """Cheap availability check for readiness probes.
+
+        Only stats the index directory -- no disk read of the (potentially
+        large) pickle file itself. Raises if the directory backing the
+        index is unreachable (e.g. an unmounted/permission-denied data_dir).
+        """
+        self._index_path.parent.stat()

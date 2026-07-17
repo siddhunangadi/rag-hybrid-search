@@ -1,105 +1,15 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Lumen</title>
-  <meta name="description" content="Hybrid retrieval + citation-verified, confidence-scored RAG search." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css" />
-  <link rel="stylesheet" href="css/components.css" />
-</head>
-<body>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="logo">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-          <path d="M21 21L16.65 16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-        </svg>
-        <span>Lumen</span>
-      </div>
-
-      <section class="sidebar-section" aria-labelledby="status-heading">
-        <h2 id="status-heading">Status</h2>
-        <div class="status-row">
-          <span id="health-dot" class="status-dot status-dot--pending" aria-hidden="true"></span>
-          <span id="health-text">Checking…</span>
-        </div>
-      </section>
-
-      <section class="sidebar-section" aria-labelledby="docs-heading">
-        <h2 id="docs-heading">Indexed documents</h2>
-        <ul id="doc-list" class="doc-list">
-          <li class="doc-list-empty">Loading…</li>
-        </ul>
-      </section>
-    </aside>
-
-    <main class="main">
-      <h1 style="margin-top: 0">Ask a grounded question</h1>
-      <p style="color: var(--color-foreground-muted); margin-top: -8px">
-        Ask questions about your uploaded documents — every answer is checked against the source text.
-      </p>
-
-      <section class="upload-card" aria-labelledby="upload-heading">
-        <h2 id="upload-heading">Upload document</h2>
-        <form id="index-form">
-          <div class="field">
-            <label for="index-filename">Filename</label>
-            <input type="text" id="index-filename" name="filename" value="notes.md" required />
-          </div>
-          <div class="field" style="margin-top: var(--space-3)">
-            <label for="index-content">Content</label>
-            <textarea id="index-content" name="content" class="field-textarea" placeholder="Paste text to index…"></textarea>
-          </div>
-          <div class="field" style="margin-top: var(--space-3)">
-            <label for="index-file">Or upload a file (.pdf, .csv, .xlsx, .docx, .md, .html, .txt)</label>
-            <input type="file" id="index-file" name="file" accept=".pdf,.csv,.xlsx,.docx,.md,.markdown,.html,.htm,.txt" multiple />
-          </div>
-          <button type="submit" id="index-button" class="btn btn--secondary btn--block" style="margin-top: var(--space-3)">
-            Index document
-          </button>
-          <p id="job-status" class="job-status" hidden></p>
-        </form>
-      </section>
-
-      <form id="ask-form" class="question-card" style="margin-top: var(--space-6)">
-        <div class="question-row">
-          <input
-            type="text"
-            id="question-input"
-            class="question-input"
-            placeholder="How many days of paid leave do employees get?"
-            required
-          />
-          <button type="submit" id="ask-button" class="btn btn--primary">Ask</button>
-        </div>
-      </form>
-
-      <section id="answer-card" class="answer-card" hidden aria-live="polite">
-        <p id="answer-text" class="answer-text"></p>
-        <p id="answer-error" class="answer-error" hidden></p>
-
-        <div id="citation-list" class="citation-list"></div>
-
-        <p id="confidence-label" class="confidence-label"></p>
-
-        <details class="dev-panel">
-          <summary>Show details</summary>
-          <pre id="dev-panel-json"></pre>
-        </details>
-      </section>
-    </main>
-  </div>
-
-  <div id="toast-region" class="toast-region" aria-live="polite"></div>
-
-  <script src="js/config.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/app.js"></script>
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAG Hybrid Search - Compliance AI Platform</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-slate-950 text-slate-50">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

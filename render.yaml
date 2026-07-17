@@ -1,20 +1,52 @@
 services:
   - type: web
-    name: rag-hybrid-search
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    name: rag-hybrid-search-api
+    env: python
     plan: free
-    healthCheckPath: /health
+    buildCommand: pip install -r requirements.txt && pip install -e .
+    startCommand: >
+      python -c "from dotenv import load_dotenv; load_dotenv()" &&
+      uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: RAG_GEMINI_API_KEY
-        sync: false
-      - key: RAG_NVIDIA_API_KEY
-        sync: false
-      - key: RAG_DATA_DIR
-        value: /opt/render/project/data
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: RAG_ENVIRONMENT
+        value: production
+      - key: RAG_PROVIDER
+        value: nvidia
+      - key: RAG_RERANK_BACKEND
+        value: nvidia
+      - key: RAG_STORAGE_BACKEND
+        value: pinecone
+      - key: RAG_DEBUG_TOKEN
+        fromDatabase:
+          name: rag-hybrid-search
+          property: RAG_DEBUG_TOKEN
       - key: RAG_PINECONE_API_KEY
-        sync: false
+        fromDatabase:
+          name: rag-hybrid-search
+          property: RAG_PINECONE_API_KEY
       - key: RAG_PINECONE_INDEX_NAME
-        sync: false
-      - key: RAG_PINECONE_ENVIRONMENT
-        sync: false
+        fromDatabase:
+          name: rag-hybrid-search
+          property: RAG_PINECONE_INDEX_NAME
+      - key: RAG_NVIDIA_API_KEY
+        fromDatabase:
+          name: rag-hybrid-search
+          property: RAG_NVIDIA_API_KEY
+    routes:
+      - path: /
+        destination: http://localhost:5173
+
+  - type: web
+    name: rag-hybrid-search-frontend
+    env: node
+    plan: free
+    buildCommand: cd frontend && npm install && npm run build
+    startCommand: cd frontend && npm run preview
+    envVars:
+      - key: VITE_API_URL
+        value: https://rag-hybrid-search-api.onrender.com
+    routes:
+      - path: /
+        destination: http://localhost:4173
